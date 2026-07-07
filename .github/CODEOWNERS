@@ -1,0 +1,17 @@
+# These owners must approve changes to:
+# - routing logic (route-command.sh)
+# - reusable workflows (.github/workflows/*.yml)
+# - prompt templates (templates/prompts/*)
+# - consumer configs (consumers/*.yaml)
+#
+# The propagate.yml workflow can push to consumer repos using AI_WORKFLOWS_PAT.
+# Central changes are high-blast-radius: one bad route-command.sh edit breaks
+# every consumer. Require review on all of these.
+
+* @lenaxia
+
+# More granular (uncomment when multiple maintainers exist):
+# /scripts/route-command.sh     @lenaxia
+# /.github/workflows/           @lenaxia
+# /templates/prompts/           @lenaxia
+# /consumers/                   @lenaxia

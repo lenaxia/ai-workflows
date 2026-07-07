@@ -1,0 +1,38 @@
+# Consumer config for lenaxia/rathena-client.
+#
+# rathena-client is a pure-Go protocol library with very specific constraints
+# (zero goroutines in pkg/, zero heap allocs, no external deps, rAthena as
+# sole authority). Its core-rules.md uses the shared spine + extensive
+# project_rules + tdd_extra + assumptions_extra blocks.
+#
+# Most command prompts have rathena-client-specific body content (different
+# constraints, different validation commands) so they are forked until
+# converged incrementally.
+#
+# context.md is consumer-owned (100% per-repo).
+
+name: rathena-client
+version: v0.1.0
+
+vars:
+  project_name: rathena-client
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks:
+  - core-rules

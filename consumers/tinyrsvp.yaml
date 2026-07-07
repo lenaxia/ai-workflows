@@ -1,0 +1,26 @@
+# Consumer config for lenaxia/TinyRSVP.
+#
+# TinyRSVP is a future consumer — it does not yet have the AI workflow stack.
+# This config bootstraps it: sync will install the rendered prompts (using
+# gokore-derived defaults as a starting point) and the caller workflows.
+#
+# context.md does not exist yet — TinyRSVP must create it before the AI
+# workflows will function (route-command.sh cats it as the first part of
+# every prompt). It is marked forked so sync does not overwrite whatever
+# TinyRSVP writes.
+#
+# To customize prompts: either (a) edit the rendered file and add it to
+# `forked` to opt out of future syncs, or (b) create a consumers/tinyrsvp/
+# override file and add it to `blocks` for template-driven customization.
+
+name: tinyrsvp
+version: v0.1.0
+
+vars:
+  project_name: TinyRSVP
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+
+blocks: []

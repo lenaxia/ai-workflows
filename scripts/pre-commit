@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# pre-commit — reject edits to files managed by lenaxia/ai-workflows.
+#
+# Install in consumer repos:
+#   cp .ai-workflows/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+#
+# Or add to .core.hooksPath via:
+#   git config core.hooksPath .ai-workflows/hooks
+#
+# This hook scans staged files for the managed-file banner. If any staged file
+# contains the banner, the commit is rejected with guidance to edit the
+# template in ai-workflows instead.
+#
+# To bypass (e.g. for sync PRs opened by the propagate bot), use:
+#   git commit --no-verify
+# This is acceptable for bot-generated commits but should never be used for
+# human edits — it defeats the purpose of the managed-file contract.
+
+set -euo pipefail
+
+BANNER_PREFIX="<!-- Managed by lenaxia/ai-workflows@"
+VIOLATIONS=0
+
+# Get staged files (added or modified, not deleted).
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
+
+for file in "${staged[@]}"; do
+  [ -f "$file" ] || continue
+  # Check if the file starts with the managed banner.
+  if head -1 "$file" 2>/dev/null | grep -qF "$BANNER_PREFIX"; then
+    echo "ERROR: $file is managed by lenaxia/ai-workflows."
+    echo "       Direct edits will be overwritten on the next sync."
+    echo "       Instead, edit the template in lenaxia/ai-workflows or add"
+    echo "       the file to 'forked:' in your consumer config."
+    echo ""
+    VIOLATIONS=$((VIOLATIONS + 1))
+  fi
+done
+
+if [ "$VIOLATIONS" -gt 0 ]; then
+  echo "$VIOLATIONS managed file(s) in this commit. Aborting."
+  echo "To override (bots only): git commit --no-verify"
+  exit 1
+fi
+
+exit 0

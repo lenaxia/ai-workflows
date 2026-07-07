@@ -1,0 +1,147 @@
+# Propagate — on tag push, render all consumers and open sync PRs.
+#
+# This is the push-propagation mechanism. When a new ai-workflows version is
+# tagged (v0.1.0 → v0.2.0), this workflow:
+#   1. Renders every consumer's files using the new templates
+#   2. Opens a PR in each consumer repo with the rendered diff
+#   3. Bumps the consumer's AI_WORKFLOWS_PIN repo variable to the new tag
+#
+# The PRs are NOT auto-merged (per design decision: review each sync). Consumers
+# can enable auto-merge individually if they choose.
+#
+# Triggered manually via workflow_dispatch for testing, or by tag push.
+# A PAT with repo + workflow scope must be stored as AI_WORKFLOWS_PAT secret
+# in THIS repo (the default GITHUB_TOKEN can't open PRs in OTHER repos).
+
+name: Propagate
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to propagate (defaults to the pushed tag / latest)"
+        required: false
+      consumer:
+        description: "Single consumer to target (defaults to all)"
+        required: false
+
+jobs:
+  propagate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer: [gokore, LLMSafeSpaces, rathena-client, tinyrsvp]
+    steps:
+      - name: Resolve target consumer
+        id: target
+        run: |
+          if [ -n "${{ github.event.inputs.consumer }}" ]; then
+            echo "name=${{ github.event.inputs.consumer }}" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.event.inputs.consumer }}" != "${{ matrix.consumer }}" ]; then
+              echo "skipping (single-consumer dispatch)"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "name=${{ matrix.consumer }}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if not targeted
+        if: steps.target.outputs.skip == 'true'
+        run: echo "Skipping ${{ matrix.consumer }} — single-consumer dispatch."
+
+      - name: Checkout ai-workflows
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve version
+        if: steps.target.outputs.skip != 'true'
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "v=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            # Use the pushed tag ref name (e.g. refs/tags/v0.2.0 → v0.2.0)
+            echo "v=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26'
+
+      - name: Build ai-sync
+        if: steps.target.outputs.skip != 'true'
+        run: go build -o /tmp/ai-sync ./scripts/ai-sync
+
+      - name: Checkout consumer
+        if: steps.target.outputs.skip != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: lenaxia/${{ matrix.consumer }}
+          token: ${{ secrets.AI_WORKFLOWS_PAT }}
+          path: consumer
+
+      - name: Render into consumer
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          /tmp/ai-sync render \
+            --consumer ${{ matrix.consumer }} \
+            --into consumer/.github/prompts \
+            --repo-root .
+          # Update the pin record in the consumer
+          cat > consumer/ai-workflows.config.yml <<EOF
+          version: ${{ steps.ver.outputs.v }}
+          source: lenaxia/ai-workflows
+          EOF
+
+      - name: Detect changes
+        if: steps.target.outputs.skip != 'true'
+        id: changes
+        working-directory: consumer
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open sync PR
+        if: steps.target.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        working-directory: consumer
+        env:
+          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
+        run: |
+          BRANCH="sync/ai-workflows-${{ steps.ver.outputs.v }}"
+          git checkout -b "$BRANCH"
+          git config user.name "ai-workflows-bot"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "chore(ai): sync to ai-workflows@${{ steps.ver.outputs.v }}"
+          git push --force-with-lease origin "$BRANCH"
+          gh pr create \
+            --title "chore(ai): sync to ai-workflows@${{ steps.ver.outputs.v }}" \
+            --body "Automated sync from lenaxia/ai-workflows@${{ steps.ver.outputs.v }}.
+
+          Review the rendered prompt diffs. Merge to accept; close to skip this version.
+
+          To roll back, revert this PR and set \`AI_WORKFLOWS_PIN\` to the previous tag." \
+            --base main \
+            --head "$BRANCH" || \
+          gh pr edit "$BRANCH" --body "Updated sync to ai-workflows@${{ steps.ver.outputs.v }} (re-targeted existing PR)."
+
+      - name: Update AI_WORKFLOWS_PIN variable
+        if: steps.target.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
+        run: |
+          gh api -X DELETE repos/lenaxia/${{ matrix.consumer }}/actions/variables/AI_WORKFLOWS_PIN 2>/dev/null || true
+          gh api repos/lenaxia/${{ matrix.consumer }}/actions/variables \
+            -f name=AI_WORKFLOWS_PIN \
+            -f value="${{ steps.ver.outputs.v }}"

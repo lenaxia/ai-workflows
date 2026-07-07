@@ -1,0 +1,28 @@
+# Consumer config for lenaxia/gokore.
+#
+# gokore is the primary consumer — the template prompts are gokore-derived,
+# so gokore uses defaults for everything except core-rules.md (which uses
+# the shared spine + gokore's project_rules block).
+#
+# context.md is consumer-owned (100% per-repo: repo description, layout,
+# architecture). Sync never touches it.
+
+name: gokore
+version: v0.1.0
+
+vars:
+  project_name: goKore
+  rules_doc: README-LLM.md
+
+# Files gokore owns outright (sync skips these, consumer maintains them).
+forked:
+  - context.md
+
+# Per-repo override files. Each name maps to consumers/gokore/<name>.md.
+# Each file can define multiple {{ define "block_name" }} blocks that fill
+# {{ block "block_name" . }} slots in the matching template.
+# - core-rules.md: defines preamble_extra, tdd_extra, project_rules, tech_debt_extra
+# - merge.md: defines merge_notes (gokore-specific post-merge steps)
+blocks:
+  - core-rules
+  - merge

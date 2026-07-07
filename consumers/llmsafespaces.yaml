@@ -1,0 +1,37 @@
+# Consumer config for lenaxia/LLMSafeSpaces.
+#
+# LLMSafeSpaces was the original source of the AI workflow patterns. Its
+# core-rules.md is close to the shared spine (SOLID, Quality Assessment,
+# Type Safety, Explicit Over Implicit) and uses the project_rules block.
+#
+# Most command prompts have LLMSafeSpaces-specific body content (different
+# architecture, different rules) so they are forked (consumer-owned) until
+# they are converged into templates incrementally.
+#
+# context.md is consumer-owned (100% per-repo).
+
+name: llmsafespaces
+version: v0.1.0
+
+vars:
+  project_name: LLMSafeSpaces
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks:
+  - core-rules

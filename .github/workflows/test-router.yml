@@ -1,0 +1,28 @@
+# Test router — runs the route-command.sh regression suite on every push/PR.
+# This is the safety net that makes centralizing route-command.sh safe: any
+# change to routing logic must pass these tests before it can reach consumers.
+
+name: Test Router
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/route-command.sh'
+      - 'tests/**'
+      - 'go.mod'
+  pull_request:
+    paths:
+      - 'scripts/route-command.sh'
+      - 'tests/**'
+      - 'go.mod'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26'
+      - run: go test -v ./tests/gharouter/...

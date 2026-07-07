@@ -1,0 +1,86 @@
+# PR Review (reusable) — runs the AI reviewer on newly-opened or updated PRs.
+#
+# Caller contract (consumer's .github/workflows/pr-review.yml):
+#
+#   on:
+#     pull_request: { types: [opened, synchronize] }
+#   jobs:
+#     review:
+#       if: github.event.pull_request.user.login != 'renovate[bot]'
+#       uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@${{ vars.AI_WORKFLOWS_PIN }}
+#       secrets: inherit
+#       with:
+#         version: ${{ vars.AI_WORKFLOWS_PIN }}
+#         project_name: gokore
+
+name: PR Review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "ai-workflows tag or sha to source scripts from"
+        type: string
+        required: true
+      project_name:
+        description: "Consumer project name (injected into prompt context)"
+        type: string
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Checkout ai-workflows (pinned)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: lenaxia/ai-workflows
+          ref: ${{ inputs.version }}
+          path: .ai-workflows
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build prompt
+        run: |
+          set -euo pipefail
+          {
+            echo "OPENCODE_PROMPT<<__PROMPT_EOF__"
+            cat .github/prompts/context.md
+            printf '\n\n---\n\n'
+            cat .github/prompts/core-rules.md
+            printf '\n\n---\n\n'
+            cat .github/prompts/pr-review.md
+            printf '\n\nA new pull request has been opened. Perform a thorough review and post your findings as a PR review comment.\n'
+            echo "__PROMPT_EOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Run OpenCode
+        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: openai-compatible/default
+          use_github_token: "true"
+          share: "false"
+          prompt: ${{ env.OPENCODE_PROMPT }}
+
+      - name: Post AI command reference (once per thread)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number }}
+          PROMPTS_DIR: .ai-workflows/templates/prompts
+        run: .ai-workflows/scripts/post-footer.sh
