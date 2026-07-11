@@ -60,7 +60,7 @@ jobs:
             cat .github/prompts/core-rules.md
             printf '\n\n---\n\n'
             cat .github/prompts/pr-review.md
-            printf '\n\nA new pull request has been opened. Perform a thorough review and post your findings as a PR review comment.\n'
+            printf '\n\nA new pull request has been opened. Perform a thorough review and submit it as a formal GitHub pull request review via `gh pr review` (APPROVE only if there are zero findings; otherwise REQUEST_CHANGES, which is blocking). Never post the verdict as a plain PR comment and never use a COMMENT-only review.\n'
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"
 
