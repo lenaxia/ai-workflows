@@ -50,6 +50,15 @@ jobs:
           path: .ai-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure git identity
+        # Self-hosted ubuntu runners in this org don't ship a default git
+        # user.name/user.email, so `git commit` from the OpenCode step fails
+        # with "empty ident name ... not allowed" whenever the AI creates a
+        # branch/PR. Set an explicit identity (GitHub's canonical bot no-reply).
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Build prompt
         run: |
           set -euo pipefail
