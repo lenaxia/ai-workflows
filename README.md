@@ -9,8 +9,11 @@ Provides reusable GitHub Action workflows, prompt templates, and the
 (`/fix`, `/implement`, `/review`, etc.) on issues and PRs.
 
 Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP) reference
-this repo via pinned reusable workflows. Prompt files are rendered from
-templates by `ai-sync` and committed to each consumer's `.github/prompts/`.
+this repo via pinned reusable workflows. gokore additionally renders shared
+prompt templates; the other consumers fork their prompts (project-specific)
+and use this repo for workflow plumbing only (router, footer, reusable
+workflows, the formal-blocking-review directive). Prompt files are rendered
+from templates by `ai-sync` and committed to each consumer's `.github/prompts/`.
 
 ## Architecture
 
@@ -132,4 +135,4 @@ individually if desired.
 | gokore | Active | Primary consumer; prompts are gokore-derived |
 | LLMSafeSpaces | Active | Original source; core-rules uses shared spine + SOLID/Quality blocks |
 | rathena-client | Active | Heavy per-repo rules; core-rules uses extensive blocks |
-| TinyRSVP | Bootstrap | Future consumer; gets default templates as starting point |
+| TinyRSVP | Active | Plumbing-only consumer; all prompts forked (RSVP-specific, not gokore-derived) |
