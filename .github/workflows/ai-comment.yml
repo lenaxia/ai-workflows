@@ -2,31 +2,33 @@
 #
 # Caller contract (consumer's .github/workflows/ai-comment.yml):
 #
+#   name: AI Commands
 #   on:
 #     issue_comment: { types: [created] }
 #     pull_request_review_comment: { types: [created] }
+#   permissions:                          # REQUIRED — see Lessons Learned #2
+#     id-token: write
+#     contents: write                     # write — allows code changes
+#     issues: write
+#     pull-requests: write
 #   jobs:
 #     respond:
 #       if: |
 #         (startsWith(github.event.comment.body, '/ai') || … ) &&
 #         (github.event.comment.author_association == 'OWNER' || …)
-#       uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@${{ vars.AI_WORKFLOWS_PIN }}
+#       uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.0
 #       secrets: inherit
 #       with:
-#         version: ${{ vars.AI_WORKFLOWS_PIN }}
-#         project_name: gokore
+#         version: v0.2.0
+#         project_name: myrepo
 #
-# The author_association filter and command-token filter live in the caller
-# (definitely evaluated there) rather than here (called-workflow `if:`
-# evaluation against github.event.* is documented but unverified for this
-# event type). Each consumer owns its own filter so it can tighten
-# permissions per-repo.
+# The `uses:` ref MUST be a hardcoded tag (no vars context — see README
+# Lessons Learned #1). The `if:` filter must stay in the caller (see #4).
 #
 # NOTE on checkouts: this workflow checks out BOTH the consumer repo (default
 # checkout, for the prompts the consumer has rendered into .github/prompts/)
 # AND this central repo at the pinned version (for route-command.sh,
-# post-footer.sh, and the commands-footer.md fallback). The pin is the
-# version-control lever — bumping AI_WORKFLOWS_PIN updates both.
+# post-footer.sh, and the commands-footer.md fallback).
 
 name: AI Commands (reusable)
 

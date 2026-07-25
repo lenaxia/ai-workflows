@@ -57,43 +57,179 @@ template here.
 
 ## Adding a consumer
 
-1. Create `consumers/<name>.yaml`:
-   ```yaml
-   name: myrepo
-   version: v0.1.0
-   vars:
-     project_name: MyRepo
-     rules_doc: README-LLM.md
-   forked:
-     - context.md
-   blocks: []
-   ```
+### 1. Create a consumer config
 
-2. Add `<name>` to the matrix in `.github/workflows/propagate.yml`.
+Create `consumers/<name>.yaml`. If your project's prompts differ from the
+gokore-derived defaults (they almost certainly do), **fork all prompts** so
+sync never overwrites them:
 
-3. In the consumer repo, add three caller workflows:
-   ```yaml
-   # .github/workflows/ai-comment.yml
-   on:
-     issue_comment: { types: [created] }
-     pull_request_review_comment: { types: [created] }
-   jobs:
-     respond:
-       if: |
-         (startsWith(github.event.comment.body, '/ai') || ...) &&
-         (github.event.comment.author_association == 'OWNER' || ...)
-       uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@${{ vars.AI_WORKFLOWS_PIN }}
-       secrets: inherit
-       with:
-         version: ${{ vars.AI_WORKFLOWS_PIN }}
-         project_name: myrepo
-   ```
+```yaml
+name: myrepo
+version: v0.2.0
 
-4. Set the `AI_WORKFLOWS_PIN` repo variable in the consumer to a tag or SHA.
+vars:
+  project_name: MyRepo
+  rules_doc: README-LLM.md
 
-5. Set the `OPENAI_API_KEY`, `OPENAI_API_BASE` secrets and `OPENAI_MODEL` variable.
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
 
-6. Run `ai-sync render --consumer myrepo --into .github/prompts` to install prompts.
+blocks: []
+```
+
+See [Templates are goKore-derived](#templates-are-gokore-derived) for why.
+
+### 2. Add the consumer to propagate.yml
+
+Add `<name>` to the matrix in `.github/workflows/propagate.yml`.
+
+### 3. Create the caller workflows in the consumer repo
+
+Add three files to the consumer's `.github/workflows/`. Each is a thin caller
+that delegates to the reusable workflow in this repo. **The `uses:` ref must
+be a hardcoded tag** — see [Lessons learned](#lessons-learned) for why.
+
+```yaml
+# .github/workflows/issue-opened.yml
+name: Issue Opened
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  respond:
+    uses: lenaxia/ai-workflows/.github/workflows/issue-opened.yml@v0.2.0
+    secrets: inherit
+    with:
+      version: v0.2.0
+      project_name: myrepo
+```
+
+```yaml
+# .github/workflows/pr-review.yml
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.user.login != 'renovate[bot]'
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.0
+    secrets: inherit
+    with:
+      version: v0.2.0
+      project_name: myrepo
+```
+
+```yaml
+# .github/workflows/ai-comment.yml
+name: AI Commands
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  id-token: write
+  contents: write          # write — this workflow allows code changes
+  issues: write
+  pull-requests: write
+
+jobs:
+  respond:
+    if: |
+      (startsWith(github.event.comment.body, '/ai') ||
+       startsWith(github.event.comment.body, '/review') ||
+       startsWith(github.event.comment.body, '/fix') ||
+       startsWith(github.event.comment.body, '/implement') ||
+       startsWith(github.event.comment.body, '/analyze') ||
+       startsWith(github.event.comment.body, '/test') ||
+       startsWith(github.event.comment.body, '/security') ||
+       startsWith(github.event.comment.body, '/explain') ||
+       startsWith(github.event.comment.body, '/triage') ||
+       startsWith(github.event.comment.body, '/help') ||
+       startsWith(github.event.comment.body, '/design') ||
+       startsWith(github.event.comment.body, '/merge') ||
+       contains(github.event.comment.body, ' /ai') ||
+       contains(github.event.comment.body, ' /review') ||
+       contains(github.event.comment.body, ' /fix') ||
+       contains(github.event.comment.body, ' /implement') ||
+       contains(github.event.comment.body, ' /analyze') ||
+       contains(github.event.comment.body, ' /test') ||
+       contains(github.event.comment.body, ' /security') ||
+       contains(github.event.comment.body, ' /explain') ||
+       contains(github.event.comment.body, ' /triage') ||
+       contains(github.event.comment.body, ' /help') ||
+       contains(github.event.comment.body, ' /design') ||
+       contains(github.event.comment.body, ' /merge')) &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.0
+    secrets: inherit
+    with:
+      version: v0.2.0
+      project_name: myrepo
+```
+
+### 4. Set up secrets and variables in the consumer repo
+
+| Setting | Type | Purpose |
+|---|---|---|
+| `OPENAI_API_KEY` | secret | LLM API key |
+| `OPENAI_API_BASE` | secret | LLM API base URL |
+| `OPENAI_MODEL` | variable | Model name (e.g. `gpt-4o`) |
+
+These are inherited by the reusable workflow via `secrets: inherit`. No
+`AI_WORKFLOWS_PIN` variable is needed — the pin is hardcoded in each
+workflow file's `uses:` and `version:` lines.
+
+### 5. Create the prompts directory
+
+The consumer needs `.github/prompts/` with at least `context.md`,
+`core-rules.md`, and the command prompts (`pr-review.md`,
+`issue-responder.md`, `fix.md`, `implement.md`, etc.). These are
+consumer-owned — either write them from scratch or render a starting set:
+
+```bash
+go build -o /tmp/ai-sync ./scripts/ai-sync
+/tmp/ai-sync render --consumer myrepo --into /path/to/myrepo/.github/prompts
+```
+
+If you rendered a starting set, review every file — the templates are
+goKore-derived and will contain project-specific references you need to fix.
 
 ## Rendering locally
 
@@ -121,12 +257,121 @@ and prompt assembly ordering.
 ## Propagation
 
 When a new version is tagged (`git tag v0.2.0`), `propagate.yml`:
-1. Renders every consumer's files using the new templates
-2. Opens a sync PR in each consumer repo
-3. Updates the `AI_WORKFLOWS_PIN` variable
+1. Renders every consumer's prompt files using the new templates
+2. **Bumps the `@<tag>` and `version:` in each consumer's workflow files** via
+   sed (the `uses:` ref is a hardcoded literal — there is no `vars` indirection)
+3. Opens a sync PR in each consumer repo with both changes (prompts + pin bump)
 
-PRs are not auto-merged — review each sync. Consumers can enable auto-merge
-individually if desired.
+The PRs are NOT auto-merged — review each sync. Consumers can enable
+auto-merge individually if they choose.
+
+To roll back: revert the sync PR. Both the prompt files and the `@<tag>` pin
+revert together in a single commit.
+
+## Lessons learned
+
+Hard-won knowledge from onboarding rathena-client and TinyRSVP. Each of these
+caused real failures in production. Read before adding a new consumer.
+
+### 1. The `uses:` ref must be a hardcoded literal (no `vars`)
+
+GitHub's [context-availability table][ctx] has **no entry for
+`jobs.<job_id>.uses`** — no contexts are permitted in the reusable-workflow
+ref. The `uses:` value must be a literal string:
+
+```yaml
+# BROKEN — fails validation on every push:
+uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@${{ vars.AI_WORKFLOWS_PIN }}
+
+# CORRECT:
+uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.0
+```
+
+Symptom: every push fails with `context "vars" is not allowed here`.
+
+[ctx]: https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
+
+### 2. Caller workflows MUST declare explicit `permissions:`
+
+A reusable workflow's `GITHUB_TOKEN` permissions **cannot exceed the caller's**.
+If the caller omits `permissions:` and the repo default is read-only, the
+reusable workflow's `id-token: write` / `issues: write` requests are silently
+downgraded and the job is rejected at startup.
+
+```yaml
+# REQUIRED — without this, repos with read-only defaults get startup_failure:
+permissions:
+  id-token: write
+  contents: read        # or write for ai-comment (allows code changes)
+  issues: write
+  pull-requests: write
+```
+
+Symptom: `startup_failure`, zero jobs, "This run likely failed because of a
+workflow file issue" — even though the workflow file is valid and the
+reusable workflow resolves correctly. This is the hardest failure to debug
+because it looks like a YAML syntax error but isn't.
+
+### 3. Templates are goKore-derived
+
+The prompt templates in `templates/prompts/` were extracted from goKore. They
+contain goKore-specific content: rathena-client packet handling, hook events,
+builders, `docs/07_WORK_LOG/`, etc. **Rendering them into a non-goKore repo
+produces incorrect prompts.**
+
+Consumer configs must fork all prompts unless the repo genuinely wants
+goKore-derived defaults:
+
+```yaml
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  # ... all command prompts
+```
+
+gokore is the only consumer that renders templates directly. All others
+(LLMSafeSpaces, rathena-client, TinyRSVP) fork their prompts and use this repo
+for workflow plumbing only (reusable workflows, router, footer, the
+formal-blocking-review directive).
+
+### 4. The `if:` filter stays in the caller
+
+A called workflow's job-level `if:` against `github.event.comment.*` is not
+reliably evaluated for `issue_comment` / `pull_request_review_comment` events.
+The command-token filter and `author_association` check **must** live in the
+caller, not the reusable workflow. Same for the `renovate[bot]` skip on
+`pr-review.yml`.
+
+### 5. Git identity must be configured on self-hosted runners
+
+This org's self-hosted ubuntu runners don't ship a default `git user.name` /
+`user.email`. Without explicit configuration, `git commit` from the OpenCode
+step fails with `empty ident name ... not allowed`. All three reusable
+workflows include a "Configure git identity" step to set
+`github-actions[bot]`.
+
+### 6. The `failure` conclusion on `issue-opened` is expected
+
+`issue-opened.yml` intentionally has `contents: read` and
+`persist-credentials: false` — it's designed for commenting, not pushing code.
+When the AI decides to make code changes (e.g. implementing a requested
+feature), `git push` fails with `could not read Username for 'https://github.com'`.
+This is pre-existing behavior, not a bug. Code changes should go through
+`/implement` or `/fix` via `ai-comment.yml` (which has `contents: write` and
+`persist-credentials: true`).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Every push fails: `context "vars" is not allowed here` | `uses:` ref contains `${{ vars.* }}` | Hardcode the tag: `@v0.2.0` |
+| `startup_failure`, zero jobs, "workflow file issue" | Caller missing `permissions:` block | Add `permissions:` matching the reusable workflow's needs |
+| `startup_failure` only on one repo, same org | That repo's default workflow permissions are read-only | Add explicit `permissions:` to the caller (or set repo default to read-write) |
+| `Run OpenCode` fails: `empty ident name` | Self-hosted runner lacks git identity | Already fixed in v0.1.2 (all reusable workflows set git identity) |
+| `Run OpenCode` fails: `could not read Username` | `issue-opened.yml` has `contents: read` — AI tried to push | Expected; use `/implement` or `/fix` for code changes |
+| Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
+| `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |
 
 ## Consumers
 

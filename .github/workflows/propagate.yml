@@ -1,10 +1,10 @@
 # Propagate — on tag push, render all consumers and open sync PRs.
 #
-# This is the push-propagation mechanism. When a new ai-workflows version is
-# tagged (v0.1.0 → v0.2.0), this workflow:
-#   1. Renders every consumer's files using the new templates
-#   2. Opens a PR in each consumer repo with the rendered diff
-#   3. Bumps the consumer's AI_WORKFLOWS_PIN repo variable to the new tag
+# When a new ai-workflows version is tagged (v0.1.2 → v0.2.0), this workflow:
+#   1. Renders every consumer's prompt files using the new templates
+#   2. Bumps the @<tag> and version: in each consumer's workflow files via sed
+#      (the uses: ref is a hardcoded literal — no vars indirection is possible)
+#   3. Opens a PR in each consumer repo with both changes (prompts + pin bump)
 #
 # The PRs are NOT auto-merged (per design decision: review each sync). Consumers
 # can enable auto-merge individually if they choose.
@@ -95,8 +95,27 @@ jobs:
             --consumer ${{ matrix.consumer }} \
             --into consumer/.github/prompts \
             --repo-root .
-          # Update the pin record in the consumer
-          cat > consumer/ai-workflows.config.yml <<EOF
+
+      - name: Bump tag in consumer workflow files
+        # The uses: ref is a hardcoded literal (GitHub doesn't allow vars
+        # context in uses:). Bump it via sed so the consumer's workflows
+        # point at the new tag. Also bump the version: input to match.
+        if: steps.target.outputs.skip != 'true'
+        working-directory: consumer
+        run: |
+          OLD_TAG=$(grep -oP 'ai-workflows/.github/workflows/\w+\.yml@\K[a-f0-9v][a-f0-9.]+' \
+            .github/workflows/ai-comment.yml | head -1)
+          NEW_TAG="${{ steps.ver.outputs.v }}"
+          echo "Bumping ${OLD_TAG:-<none>} → ${NEW_TAG}"
+          for wf in .github/workflows/ai-comment.yml .github/workflows/issue-opened.yml .github/workflows/pr-review.yml; do
+            [ -f "$wf" ] || continue
+            if [ -n "$OLD_TAG" ]; then
+              sed -i "s|@${OLD_TAG}|@${NEW_TAG}|g" "$wf"
+              sed -i "s|version: ${OLD_TAG}|version: ${NEW_TAG}|g" "$wf"
+            fi
+          done
+          # Record the pin for auditability
+          cat > ai-workflows.config.yml <<EOF
           version: ${{ steps.ver.outputs.v }}
           source: lenaxia/ai-workflows
           EOF
@@ -129,14 +148,21 @@ jobs:
             --title "chore(ai): sync to ai-workflows@${{ steps.ver.outputs.v }}" \
             --body "Automated sync from lenaxia/ai-workflows@${{ steps.ver.outputs.v }}.
 
-          Review the rendered prompt diffs. Merge to accept; close to skip this version.
+          This PR includes:
+          - Rendered prompt files (if any templates changed)
+          - Bumped \`@<tag>\` and \`version:\` in the three AI workflow files
 
-          To roll back, revert this PR and set \`AI_WORKFLOWS_PIN\` to the previous tag." \
+          Review the diff. Merge to accept; close to skip this version.
+
+          To roll back, revert this PR — both prompts and the pin revert together." \
             --base main \
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated sync to ai-workflows@${{ steps.ver.outputs.v }} (re-targeted existing PR)."
 
-      - name: Update AI_WORKFLOWS_PIN variable
+      - name: Update AI_WORKFLOWS_PIN variable (audit record)
+        # The functional pin is the hardcoded @<tag> in the workflow files
+        # (bumped above). This variable is kept as an audit/lookup record only
+        # — it is not read by any workflow's uses: ref.
         if: steps.target.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
@@ -144,4 +170,4 @@ jobs:
           gh api -X DELETE repos/lenaxia/${{ matrix.consumer }}/actions/variables/AI_WORKFLOWS_PIN 2>/dev/null || true
           gh api repos/lenaxia/${{ matrix.consumer }}/actions/variables \
             -f name=AI_WORKFLOWS_PIN \
-            -f value="${{ steps.ver.outputs.v }}"
+            -f value="${{ steps.ver.outputs.v }}" 2>/dev/null || true
