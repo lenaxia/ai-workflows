@@ -2,15 +2,24 @@
 #
 # Caller contract (consumer's .github/workflows/issue-opened.yml):
 #
+#   name: Issue Opened
 #   on:
 #     issues: { types: [opened] }
+#   permissions:                          # REQUIRED — see README Lessons Learned #2
+#     id-token: write
+#     contents: read
+#     issues: write
+#     pull-requests: write
 #   jobs:
 #     respond:
-#       uses: lenaxia/ai-workflows/.github/workflows/issue-opened.yml@${{ vars.AI_WORKFLOWS_PIN }}
+#       uses: lenaxia/ai-workflows/.github/workflows/issue-opened.yml@v0.2.0
 #       secrets: inherit
 #       with:
-#         version: ${{ vars.AI_WORKFLOWS_PIN }}
-#         project_name: gokore
+#         version: v0.2.0
+#         project_name: myrepo
+#
+# The `uses:` ref MUST be a hardcoded tag (no vars context — see README
+# Lessons Learned #1).
 
 name: Issue Opened (reusable)
 
