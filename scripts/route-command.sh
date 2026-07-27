@@ -38,6 +38,8 @@ route_command() {
   OUT="$out_file"
   OUT_FILE="$out_file"
 
+  local pr_head_sha="${PR_HEAD_SHA:-}"
+
   # Detect which command was used (check start of comment first, then inline).
   # Each pattern requires the command keyword followed by end-of-string or
   # a space — this prevents false matches like /testing → /test or /fixing → /fix.
@@ -104,6 +106,9 @@ route_command() {
   case "$COMMAND" in
     /review)
       cat "${prompts_dir}/pr-review.md" >> "$OUT"
+      if [ -n "$pr_head_sha" ]; then
+        printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$pr_head_sha" >> "$OUT"
+      fi
       if [ -n "$NOTE" ]; then
         printf '\n\nAdditional review focus from collaborator:\n\n> %s\n' "$NOTE" >> "$OUT"
       fi
@@ -178,6 +183,9 @@ route_command() {
         printf 'A collaborator has asked:\n\n> %s\n\nAddress this request. For any code changes: create a feature branch, open a PR, never commit to main directly.\n' "$NOTE" >> "$OUT"
       elif [ -n "$pr_url" ] || [ "$event_name" = "pull_request_review_comment" ]; then
         cat "${prompts_dir}/pr-review.md" >> "$OUT"
+        if [ -n "$pr_head_sha" ]; then
+          printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$pr_head_sha" >> "$OUT"
+        fi
         printf '\n\nA collaborator triggered a re-review by posting `/ai`. Re-assess the PR in full, taking into account all commits pushed since the last review. Note what changed since the previous review if one exists.\n' >> "$OUT"
       else
         cat "${prompts_dir}/issue-responder.md" >> "$OUT"
