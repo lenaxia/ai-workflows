@@ -35,11 +35,31 @@ ai-workflows/
 │   ├── <repo>.yaml           #   Contract: vars, forked, blocks
 │   └── <repo>/               #   Per-repo block overrides
 ├── tests/                    # Regression tests
-│   ├── gharouter/            #   route-command.sh tests (87 subtests)
+│   ├── gharouter/            #   route-command.sh tests (94 subtests)
 │   └── aisync/               #   ai-sync renderer tests (7 tests)
 ├── opencode.json             # Canonical opencode config
 └── go.mod
 ```
+
+## Concurrency / cancellation
+
+Review-producing runs collapse to a single per-PR concurrency group so the
+latest review wins; code-change commands are never cancelled mid-run.
+
+| Run | Concurrency group | `cancel-in-progress` |
+|---|---|---|
+| `pr-review.yml` (auto, open/synchronize) | `ai-review-<PR#>` | true |
+| `ai-comment.yml` for `/review` or `/ai` on a PR | `ai-review-<PR#>` (shared with the above) | true |
+| `ai-comment.yml` for any other command (`/fix`, `/implement`, `/test`, `/security`, `/design`, `/merge`, …) | `ai-cmd-<PR#>-<comment-id>` (unique per comment) | true (never collides → never cancels) |
+
+So: a new push or a fresh `/review` cancels an in-flight review of a now-stale
+commit (which would otherwise waste cost and post conflicting review events on
+different SHAs). But a `/review` cannot kill an in-flight `/implement` — they
+live in different groups — so code changes always run to completion.
+
+Reviews also state the exact commit they cover: the PR `headRefOid` is injected
+into the review prompt, and the review body format requires a leading
+`**Commit reviewed:** <SHA>` line.
 
 ## File classification contract
 
@@ -249,7 +269,7 @@ go test ./tests/gharouter/... # router tests only
 go test ./tests/aisync/...    # renderer tests only
 ```
 
-The router tests (87 subtests) exercise `route-command.sh` end-to-end:
+The router tests (94 subtests) exercise `route-command.sh` end-to-end:
 command detection, prefix-collision prevention (`/testing` ≠ `/test`),
 `--no-merge` hold behavior, NOTE extraction, `/ai` context branching,
 and prompt assembly ordering.

@@ -18,6 +18,8 @@ You MUST deliver your verdict as a real PR review event so GitHub records an app
      gh pr review <N> --request-changes --body-file /tmp/review-body.md
      ```
 
+The review body MUST begin with a `**Commit reviewed:**` line (see the output format below) stating the exact SHA you assessed, which is supplied in the prompt context. A review that omits the commit it covers is incomplete.
+
 **Blocking rule (non-negotiable):** anything that is not an approval MUST be submitted as `--request-changes`. **Never** submit a `COMMENT`-only review and **never** post the verdict as a plain `gh pr comment` / `gh issue comment`. There are only two outcomes from this review: `APPROVE` or `REQUEST_CHANGES`. A request-changes review blocks the PR from merging until the findings are resolved and a follow-up review approves — this is intentional.
 
 Review checklist — assess every item and call out failures explicitly:
@@ -69,6 +71,9 @@ STYLE
 - No unnecessary complexity, dead code, or commented-out blocks?
 
 Output format — this is the body of the review you submit via `gh pr review`. Use this structure:
+
+**Commit reviewed:** `<full 40-char SHA>` — the exact commit this review covers. The SHA under review is provided in the prompt context (the PR's `headRefOid`); paste it verbatim. This line MUST be the first line of the review body so it is always unambiguous which commit a given review assessed.
+
 ## Code Review
 
 ### Summary

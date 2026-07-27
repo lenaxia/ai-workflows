@@ -39,6 +39,9 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ai-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       id-token: write
       contents: read
@@ -69,6 +72,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Build prompt
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           {
@@ -78,6 +83,7 @@ jobs:
             cat .github/prompts/core-rules.md
             printf '\n\n---\n\n'
             cat .github/prompts/pr-review.md
+            printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$PR_HEAD_SHA"
             printf '\n\nA new pull request has been opened. Perform a thorough review and submit it as a formal GitHub pull request review via `gh pr review` (APPROVE only if there are zero findings; otherwise REQUEST_CHANGES, which is blocking). Never post the verdict as a plain PR comment and never use a COMMENT-only review.\n'
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"

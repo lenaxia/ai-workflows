@@ -74,6 +74,13 @@ type routeResult struct {
 // comment body and event context, then parses its stdout contract.
 func runRouter(t *testing.T, commentBody string, onPR bool, eventName string) routeResult {
 	t.Helper()
+	return runRouterCtx(t, commentBody, onPR, eventName, "")
+}
+
+// runRouterCtx is the context-aware core of runRouter. headSHA, when non-empty,
+// is passed to the script as PR_HEAD_SHA so review-path injection can be tested.
+func runRouterCtx(t *testing.T, commentBody string, onPR bool, eventName, headSHA string) routeResult {
+	t.Helper()
 	script := scriptPath(t)
 	promptsDir := stubPromptsDir(t)
 	outFile := filepath.Join(t.TempDir(), "prompt.txt")
@@ -91,6 +98,7 @@ func runRouter(t *testing.T, commentBody string, onPR bool, eventName string) ro
 		"COMMENT_BODY=" + commentBody,
 		"PR_URL=" + prURL,
 		"EVENT_NAME=" + eventName,
+		"PR_HEAD_SHA=" + headSHA,
 		"PROMPTS_DIR=" + promptsDir,
 		"OUT_FILE=" + outFile,
 		// Minimal PATH so bash, grep, sed, printf resolve.
@@ -518,6 +526,69 @@ func TestAI_Branching(t *testing.T) {
 			t.Errorf("/ai on an issue without note must append issue-responder stub:\n%s", r.Prompt)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// PR_HEAD_SHA injection (which commit was reviewed)
+// ---------------------------------------------------------------------------
+
+func TestReview_HeadSHAInjectedForReviewPaths(t *testing.T) {
+	// Both explicit `/review` and `/ai` re-review (on a PR, no note) must
+	// surface the exact commit SHA being reviewed so the review body can
+	// state which commit it covers.
+	const sha = "abc123def4567890abcdef0123456789abcdef01"
+	for _, body := range []string{"/review", "/ai"} {
+		t.Run(body, func(t *testing.T) {
+			r := runRouterCtx(t, body, true, "issue_comment", sha)
+			if !strings.Contains(r.Prompt, "Commit under review") {
+				t.Errorf("review prompt must label the SHA line:\n%s", r.Prompt)
+			}
+			if !strings.Contains(r.Prompt, sha) {
+				t.Errorf("review prompt must contain head SHA %q:\n%s", sha, r.Prompt)
+			}
+		})
+	}
+}
+
+func TestReview_HeadSHAOmittedWhenEmpty(t *testing.T) {
+	// When no SHA is supplied (e.g. issue_comment without API resolution),
+	// the review path must still assemble cleanly and omit the SHA line
+	// rather than printing an empty backtick block.
+	for _, body := range []string{"/review", "/ai"} {
+		t.Run(body, func(t *testing.T) {
+			r := runRouterCtx(t, body, true, "issue_comment", "")
+			if strings.Contains(r.Prompt, "Commit under review") {
+				t.Errorf("review prompt must omit SHA line when empty:\n%s", r.Prompt)
+			}
+			if strings.TrimSpace(r.Prompt) == "" {
+				t.Errorf("review prompt must still be non-empty without SHA")
+			}
+		})
+	}
+}
+
+func TestReview_HeadSHANotInjectedForNonReviewCommands(t *testing.T) {
+	// A code-change command on a PR must NOT get the review SHA line; only
+	// review-producing paths surface the reviewed commit.
+	const sha = "deadbeef"
+	for _, body := range []string{"/fix the bug", "/implement x", "/ai freeform question"} {
+		t.Run(body, func(t *testing.T) {
+			r := runRouterCtx(t, body, true, "issue_comment", sha)
+			if strings.Contains(r.Prompt, "Commit under review") {
+				t.Errorf("non-review command must not get review SHA line:\n%s", r.Prompt)
+			}
+		})
+	}
+}
+
+func TestReview_HeadSHAInjectedForReviewCommentEvent(t *testing.T) {
+	// pull_request_review_comment events imply PR context and must inject
+	// the SHA on the `/ai` re-review path just like issue_comment does.
+	const sha = "feedface"
+	r := runRouterCtx(t, "/ai", true, "pull_request_review_comment", sha)
+	if !strings.Contains(r.Prompt, sha) {
+		t.Errorf("review-comment event must inject head SHA:\n%s", r.Prompt)
+	}
 }
 
 // ---------------------------------------------------------------------------
