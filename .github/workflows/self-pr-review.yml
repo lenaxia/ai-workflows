@@ -1,0 +1,35 @@
+# PR Review (self / dogfood) — runs this repo's own reusable pr-review workflow
+# on its own PRs.
+#
+# Why a separate file: the reusable workflow definition already occupies
+# .github/workflows/pr-review.yml (on: workflow_call). A caller needs distinct
+# filename. The `self-` prefix signals self-consumption.
+#
+# This is the live validation layer: a PR here triggers the real AI reviewer at
+# the pinned tag, exercising prompt assembly, the LLM call, the formal-blocking-
+# review submission, the commit-SHA attribution, and concurrency control — none
+# of which `go test` covers.
+#
+# Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
+# OPENAI_MODEL (inherited via secrets: inherit).
+
+name: PR Review (self)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.user.login != 'renovate[bot]'
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.0
+    secrets: inherit
+    with:
+      version: v0.2.0
+      project_name: ai-workflows
