@@ -1,0 +1,53 @@
+# Consumer config for lenaxia/ai-workflows itself (self-dogfooding).
+#
+# This repo consumes its OWN reusable workflows so changes to the review/router
+# pipeline are validated on real PRs here before/after release, instead of only
+# by `go test` (which covers route-command.sh and the renderer, not the live
+# workflow YAML, the LLM call, or prompt assembly).
+#
+# Fork policy mirrors the other non-gokore consumers (the command templates are
+# goKore-derived: rathena-client packets, hook events, builders, docs/07_WORK_LOG)
+# EXCEPT for three files this repo intentionally RENDERS:
+#
+#   - pr-review.md       — so template changes (e.g. the commit-reviewed directive)
+#                          flow through and get exercised by real reviews here.
+#   - core-rules.md      — the shared spine is generic (TDD, Assumptions, Zero Tech
+#                          Debt); gokore-specifics live in {{ block }} slots that
+#                          render empty, so the rendered file is correct for any repo.
+#   - commands-footer.md — generic command-reference table; repo-agnostic.
+#
+# context.md is consumer-owned (never had a template).
+#
+# Rendered files are produced by `ai-sync render` and carry a managed-file banner.
+# The caller workflows live at .github/workflows/self-*.yml (the reusable workflow
+# definitions already occupy the canonical pr-review.yml / ai-comment.yml /
+# issue-opened.yml names in this repo, so the dogfood callers use a `self-` prefix).
+#
+# NOTE: self-ai-comment.yml and self-issue-opened.yml callers are a follow-up;
+# their prompt files (fix.md, implement.md, issue-responder.md, …) are forked
+# (gokore-contaminated) and must be written from scratch before those commands
+# work here. Until then only self-pr-review.yml is wired up.
+
+name: ai-workflows
+version: v0.2.0
+
+vars:
+  project_name: ai-workflows
+  rules_doc: README.md
+
+forked:
+  - context.md
+  - analyze.md
+  - code-change-workflow.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
