@@ -13,7 +13,7 @@ Rules:
    - **LLM integration:** Could the LLM cognitive layer be manipulated via in-game chat to execute unintended actions? Are LLM prompts/responses sanitized?
    - **Packet length / field authority:** When a finding hinges on a packet's declared length or field layout, cross-reference rAthena (`git clone --depth 1 https://github.com/rathena/rathena.git /tmp/rathena`; check `src/map/packets.hpp` for declared lengths and `src/map/packets_struct.hpp` for the struct). A handler that assumes a different length/layout than rAthena declares is relying on a rathena-client gap — file a report citing rAthena (Rule 18), do not work around it.
    - **Secrets in config:** Are there hardcoded secrets, API keys, or credentials in the diff?
-2. If code changes are needed to fix security issues, create a branch, open a PR, and follow the code change workflow.
+2. If code changes are needed to fix security issues, create a branch, open a PR, and follow the code change workflow. **For every security vulnerability you fix, write a regression test that proves the fix** — a test that fails against the vulnerable code (exercises the exploit path) and passes after the fix. A security fix without a regression test is incomplete.
 3. Never handle or create secrets.
 4. For read-only security analysis, post findings as a comment.
 

@@ -29,6 +29,7 @@ CORRECTNESS
 - Does the code do what the PR description claims?
 - Are there logic errors, off-by-one errors, or incorrect conditionals?
 - Are error paths handled and errors propagated correctly?
+- **For every correctness finding you raise, you MUST specify the regression test that would catch it** (see Required Regression Tests in the output format). A finding without a corresponding regression-test spec is incomplete.
 
 ARCHITECTURE (README-LLM.md Rules 4, 5, 7, 11, 16, 18)
 - **Hook events:** Do handlers emit `hook.*Event` structs from `internal/hook/events.go`? (NEVER local event types — Rule 4)
@@ -45,11 +46,13 @@ TESTS
 - Are there bot-layer integration tests (not just unit tests)? TDD is required per README-LLM.md.
 - **Full-repo validation:** Does `go build ./...` pass with exit 0? Does `go test ./...` show zero FAIL lines?
 - Identify missing test cases: read the changed code carefully and enumerate concrete scenarios not covered.
+- **Regression test requirement:** For every bug you identify in Correctness, Robustness, or Security — whether it is a logic error, a missing bounds check, an unhandled edge case, or any other defect — you MUST specify the regression test that would have caught it. This is separate from "missing test cases" (which covers untested new functionality). A regression test targets the specific defect so it cannot recur silently. Detail each one in the Required Regression Tests section below.
 
 ROBUSTNESS
 - Identify specific points in the design or implementation that are weak, fragile, or prone to failure — e.g. missing bounds checks, unhandled edge cases, race conditions, goroutine leaks, incorrect assumptions.
 - For each candidate weakness, verify it is real: trace the code path, check whether existing safeguards already cover it. Only include weaknesses that survive this validation.
 - Check for goroutine leaks (goroutines spawned without ctx cancellation or cleanup — Rule 16).
+- **Each validated weakness is a bug** — specify the regression test that would catch it in the Required Regression Tests section.
 
 TYPE SAFETY (README-LLM.md Rule 2)
 - No `map[string]interface{}` for structured data?
@@ -90,7 +93,10 @@ Output format — this is the body of the review you submit via `gh pr review`. 
 [findings or ✓ Adequate coverage]
 
 #### Missing test cases
-[List only meaningful, impactful missing tests — or "None identified"]
+[List only meaningful, impactful missing tests for new functionality — or "None identified"]
+
+#### Required regression tests
+[For EVERY bug identified in Correctness, Robustness, or Security, specify the regression test that must be added. Format each as: the defect, the test name/location that would catch it, the input/scenario, and the expected vs. actual behavior. A REQUEST CHANGES verdict with bug findings that leaves this section empty or says "None identified" is a process violation — if you found a bug, you must be able to describe how to test for it. Or "None — no bug findings" when all sections are clean.]
 
 ### Robustness
 [List only validated weaknesses confirmed to be real — or ✓ No concerns]
@@ -112,6 +118,6 @@ Output format — this is the body of the review you submit via `gh pr review`. 
 
 **Choosing the verdict (binary — no COMMENT allowed):**
 - `APPROVE` — only when every section above is clean (all `✓`, no findings). Submit with `gh pr review <N> --approve`.
-- `REQUEST CHANGES` — when there is **any** finding in **any** section, no matter how minor. This is a **blocking** review. Submit with `gh pr review <N> --request-changes`.
+- `REQUEST CHANGES` — when there is **any** finding in **any** section, no matter how minor. This is a **blocking** review. Submit with `gh pr review <N> --request-changes`. **When the finding is a bug (Correctness, Robustness, or Security), the Required Regression Tests section MUST be populated with the specific test the author must add — this tells the author exactly what to implement before re-requesting review, so the fix is test-driven and the regression is locked.**
 
 There is no third option. Never emit `COMMENT` and never downgrade a finding to a non-blocking comment. If you are uncertain whether something is a real issue, investigate until you can classify it (real finding → REQUEST CHANGES, or not → drop it). A review with open findings that is not submitted as `--request-changes` is a process violation.
