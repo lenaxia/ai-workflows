@@ -1,0 +1,40 @@
+# Consumer config for lenaxia/containers.
+#
+# containers is an opinionated collection of container images (Dockerfiles,
+# docker-bake.hcl, Taskfile, container-structure-test). It uses ai-workflows
+# for workflow plumbing only (reusable workflows, route-command.sh,
+# post-footer.sh, formal-blocking-review directive).
+#
+# All prompts are containers-specific (Docker best practices, multi-arch
+# builds, image immutability, one process per container, Alpine/Ubuntu bases,
+# rootless containers). The shared templates are goKore-derived and are wrong
+# for this repo — so every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: containers
+version: v0.2.0
+
+vars:
+  project_name: containers
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
