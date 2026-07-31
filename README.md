@@ -251,6 +251,64 @@ go build -o /tmp/ai-sync ./scripts/ai-sync
 If you rendered a starting set, review every file — the templates are
 goKore-derived and will contain project-specific references you need to fix.
 
+### 6. Add `opencode.json` to the consumer repo
+
+The reusable workflows invoke OpenCode CLI, which requires an
+`opencode.json` at the consumer repo root. This file configures the LLM
+provider (OpenAI-compatible endpoint via env vars) and bash command
+permissions for the agent runner.
+
+Use the canonical config from this repo's root as a starting point:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "provider": {
+    "openai-compatible": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Custom OpenAI-compatible endpoint",
+      "options": {
+        "baseURL": "{env:OPENAI_API_BASE}",
+        "apiKey": "{env:OPENAI_API_KEY}"
+      },
+      "models": {
+        "default": {
+          "name": "{env:OPENAI_MODEL}",
+          "id": "{env:OPENAI_MODEL}"
+        }
+      }
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "bash": {
+      "*": "deny",
+      "git*": "allow",
+      "gh*": "allow",
+      "mkdir*": "allow",
+      "cat*": "allow",
+      "ls*": "allow",
+      "pwd": "allow",
+      "jq*": "allow"
+    }
+  }
+}
+```
+
+Customize the `bash` allowlist for the consumer's toolchain. For example:
+
+| Consumer | Extra bash allows | Why |
+|----------|-------------------|-----|
+| `gokore` | `go*`, `make*` | Go builds + Makefile targets |
+| `LLMSafeSpaces` | `go*` | Go controller builds/tests |
+| `containers` | `docker*`, `task*` | Docker buildx + Taskfile for image builds |
+
+The deny-by-default bash policy (`"*": "deny"` inside `bash`) prevents the
+agent from running arbitrary commands. Only explicitly allowed patterns run.
+Add the minimum set of commands the agent needs for that repo's build and
+test cycle.
+
 ## Rendering locally
 
 ```bash
