@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        consumer: [gokore, LLMSafeSpaces, rathena-client, tinyrsvp]
+        consumer: [gokore, LLMSafeSpaces, rathena-client, tinyrsvp, containers]
     steps:
       - name: Resolve target consumer
         id: target

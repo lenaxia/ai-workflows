@@ -8,7 +8,7 @@ Provides reusable GitHub Action workflows, prompt templates, and the
 `route-command.sh` router that powers slash-command AI interactions
 (`/fix`, `/implement`, `/review`, etc.) on issues and PRs.
 
-Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP) reference
+Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP, containers) reference
 this repo via pinned reusable workflows. gokore additionally renders shared
 prompt templates; the other consumers fork their prompts (project-specific)
 and use this repo for workflow plumbing only (router, footer, reusable
@@ -401,3 +401,4 @@ This is pre-existing behavior, not a bug. Code changes should go through
 | LLMSafeSpaces | Active | Original source; core-rules uses shared spine + SOLID/Quality blocks |
 | rathena-client | Active | Heavy per-repo rules; core-rules uses extensive blocks |
 | TinyRSVP | Active | Plumbing-only consumer; all prompts forked (RSVP-specific, not gokore-derived) |
+| containers | Active | Plumbing-only consumer; all prompts forked (container image builds, not gokore-derived) |
