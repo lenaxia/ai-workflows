@@ -60,7 +60,12 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-          persist-credentials: true
+          # persist-credentials: false — this workflow only REVIEWS code, it
+          # never pushes, matching issue-opened.yml (see README Lessons
+          # Learned #6). Consumers that need to push code use ai-comment.yml
+          # (/fix, /implement), which has persist-credentials: true +
+          # contents: write.
+          persist-credentials: false
 
       - name: Checkout ai-workflows (pinned)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
