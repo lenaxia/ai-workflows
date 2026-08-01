@@ -8,7 +8,7 @@
 # architecture). Sync never touches it.
 
 name: gokore
-version: v0.1.0
+version: v0.2.1
 
 vars:
   project_name: goKore
