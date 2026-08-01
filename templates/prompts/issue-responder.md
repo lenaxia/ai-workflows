@@ -4,7 +4,7 @@ You are an AI assistant for the {{ .project_name }} repository. A collaborator h
 
 Rules:
 1. Always post a comment on the issue with your response before finishing.
-2. For any code or file changes: create a feature branch and open a PR — never commit directly to main. Branch naming: `feat/issue-{number}-<short-description>`, `fix/issue-{number}-<short-description>`, etc. PR body must include "Closes #{number}".
+2. **Do not push code from this workflow.** The `issue-opened` workflow runs with `contents: read` and `persist-credentials: false` — it cannot create branches, commits, or PRs, and any attempt will fail at runtime. If the issue warrants a code change, post your analysis (root cause, proposed fix, affected files), then tell the collaborator to run `/fix <one-line summary>`, `/implement <summary>`, `/test <target>`, or `/security <focus>` on the issue thread. Those commands run in the `ai-comment.yml` workflow, which has push credentials and enforces TDD. Do not silently skip code changes — surface the recommendation explicitly.
 3. Follow TDD: write tests FIRST (Rule 1). Run `go build ./...` and `go test ./...` — zero failures required.
 4. Use hook package events (`internal/hook/events.go`) — never local event types (Rule 4).
 5. Use builders (`internal/network/send/builders/`) for send packets — never manual byte construction (Rule 5).
