@@ -1,0 +1,54 @@
+# AI Commands (self / dogfood) — runs this repo's own reusable ai-comment
+# workflow on its own PRs, so slash commands work here instead of silently
+# no-oping.
+#
+# Why a separate file: the reusable workflow definition already occupies
+# .github/workflows/ai-comment.yml (on: workflow_call). A caller needs a
+# distinct filename. The `self-` prefix signals self-consumption, mirroring
+# self-pr-review.yml.
+#
+# This is the live validation layer for command routing: an issue_comment here
+# triggers the real router (route-command.sh) + LLM call + footer posting at
+# the pinned tag — none of which `go test` covers.
+#
+# Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
+# OPENAI_MODEL (inherited via secrets: inherit).
+#
+# Serviced commands: only /review is gated because it is the only command whose
+# prompt (.github/prompts/pr-review.md) ships. The other commands (/fix,
+# /implement, /ai, ...) require prompt files that do not exist yet
+# (see consumers/ai-workflows.yaml "forked:" + note) — under set -euo pipefail,
+# route-command.sh's unconditional `cat` of a missing prompt file fails the
+# Build-prompt step, so gating them here would guarantee red runs. Expand the
+# filter in the SAME PR that ships those prompt files.
+#
+# Consistency contract: tests/workflows/prompt_coverage_test.go asserts that
+# every command gated in this file has its prompt file present in
+# .github/prompts/.
+name: AI Commands (self)
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  id-token: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  respond:
+    if: |
+      (startsWith(github.event.comment.body, '/review') ||
+       contains(github.event.comment.body, ' /review')) &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.1
+    secrets: inherit
+    with:
+      version: v0.2.1
+      project_name: ai-workflows

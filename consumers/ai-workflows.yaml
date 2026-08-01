@@ -23,13 +23,16 @@
 # definitions already occupy the canonical pr-review.yml / ai-comment.yml /
 # issue-opened.yml names in this repo, so the dogfood callers use a `self-` prefix).
 #
-# NOTE: self-ai-comment.yml and self-issue-opened.yml callers are a follow-up;
-# their prompt files (fix.md, implement.md, issue-responder.md, …) are forked
-# (gokore-contaminated) and must be written from scratch before those commands
-# work here. Until then only self-pr-review.yml is wired up.
+# NOTE: self-ai-comment.yml is wired up for /review only (the sole command
+# whose prompt ships). The other command prompts (fix.md, implement.md,
+# issue-responder.md, …) are forked (gokore-contaminated) and must be written
+# from scratch before those commands work here; expand self-ai-comment.yml's
+# filter in the same PR that ships them. self-issue-opened.yml is still an
+# unwired follow-up. tests/workflows/prompt_coverage_test.go enforces the
+# filter/prompts contract.
 
 name: ai-workflows
-version: v0.2.0
+version: v0.2.1
 
 vars:
   project_name: ai-workflows
