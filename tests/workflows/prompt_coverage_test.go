@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,48 @@ func promptFilesFor(cmd string) []string {
 	}
 }
 
+// gatedCommands extracts the /command tokens from the `if:` block of a
+// workflow file's content, ignoring `#` comment lines so header prose that
+// mentions a command (e.g. "gate /fix once fix.md ships") cannot perturb the
+// asserted set.
+func gatedCommands(content []byte) []string {
+	var ifBlock []byte
+	lines := strings.Split(string(content), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "if:") {
+			// Include the `if:` line and the following indented block.
+			ifBlock = append(ifBlock, []byte(line)...)
+			for _, rest := range lines[i+1:] {
+				if strings.TrimSpace(rest) == "" {
+					continue
+				}
+				if len(rest) > 0 && rest[0] != ' ' {
+					break
+				}
+				if strings.HasPrefix(strings.TrimSpace(rest), "#") {
+					continue
+				}
+				ifBlock = append(ifBlock, '\n')
+				ifBlock = append(ifBlock, []byte(rest)...)
+			}
+			break
+		}
+	}
+
+	seen := map[string]bool{}
+	var gated []string
+	for _, m := range commandRE.FindAllStringSubmatch(string(ifBlock), -1) {
+		cmd := m[1]
+		if seen[cmd] {
+			continue
+		}
+		seen[cmd] = true
+		gated = append(gated, cmd)
+	}
+	return gated
+}
+
 // TestGatedCommandsHavePromptFiles parses the gated /command tokens out of
 // self-ai-comment.yml's if: block and asserts the prompt file(s) each command
 // reads exist in .github/prompts/. A broadened filter must ship the prompt
@@ -68,18 +111,9 @@ func TestGatedCommandsHavePromptFiles(t *testing.T) {
 		t.Fatalf("read %s: %v", wfPath, err)
 	}
 
-	seen := map[string]bool{}
-	var gated []string
-	for _, m := range commandRE.FindAllStringSubmatch(string(wfContent), -1) {
-		cmd := m[1]
-		if seen[cmd] {
-			continue
-		}
-		seen[cmd] = true
-		gated = append(gated, cmd)
-	}
+	gated := gatedCommands(wfContent)
 	if len(gated) == 0 {
-		t.Fatalf("no /command tokens found in %s", wfPath)
+		t.Fatalf("no /command tokens found in %s if: block", wfPath)
 	}
 
 	promptsDir := filepath.Join(root, ".github", "prompts")
@@ -90,5 +124,25 @@ func TestGatedCommandsHavePromptFiles(t *testing.T) {
 				t.Errorf("self-ai-comment.yml gates /%s but required prompt %s is missing (does the filter need narrowing?)", cmd, full)
 			}
 		}
+	}
+}
+
+// TestGatedCommandsCommentImmunity locks the scope of gatedCommands to the if:
+// block: a header comment mentioning a command token must not change the
+// asserted gated set.
+func TestGatedCommandsCommentImmunity(t *testing.T) {
+	root := workflowRoot(t)
+	content, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "self-ai-comment.yml"))
+	if err != nil {
+		t.Fatalf("read self-ai-comment.yml: %v", err)
+	}
+
+	before := gatedCommands(content)
+
+	injected := append([]byte("# TODO: gate /fix once fix.md ships\n"), content...)
+	after := gatedCommands(injected)
+
+	if strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Errorf("comment prose changed the gated set: %v -> %v (if: block scoping is broken)", before, after)
 	}
 }
