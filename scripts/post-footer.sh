@@ -16,7 +16,8 @@
 #   GH_TOKEN        — GitHub auth token (secrets.GITHUB_TOKEN)
 #   REPOSITORY      — full owner/repo (github.repository)
 #   ISSUE_NUMBER    — issue or PR number (github.event.issue.number)
-#   PROMPTS_DIR     — directory containing commands-footer.md (.ai-workflows/templates/prompts)
+#   PROMPTS_DIR     — directory containing commands-footer.md (.github/prompts, the
+#                     consumer's rendered/forked copy — NOT the central template)
 #   MARKER          — dedup marker (default: <!-- ai-commands-footer -->)
 #
 # Exits 0 in all idempotent-skip cases so the workflow step never fails the
@@ -26,7 +27,7 @@ set -euo pipefail
 gh_token="${GH_TOKEN:-}"
 repository="${REPOSITORY:-}"
 issue_number="${ISSUE_NUMBER:-}"
-prompts_dir="${PROMPTS_DIR:-.ai-workflows/templates/prompts}"
+prompts_dir="${PROMPTS_DIR:-.github/prompts}"
 marker="${MARKER:-<!-- ai-commands-footer -->}"
 
 if [ -z "$gh_token" ]; then
