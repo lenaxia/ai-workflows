@@ -415,3 +415,4 @@ This is pre-existing behavior, not a bug. Code changes should go through
 | rathena-client | Active | Heavy per-repo rules; core-rules uses extensive blocks |
 | TinyRSVP | Active | Plumbing-only consumer; all prompts forked (RSVP-specific, not gokore-derived) |
 | containers | Active | Plumbing-only consumer; all prompts forked (container image builds, not gokore-derived) |
+| talos-ops-prod | Active | Plumbing-only consumer; all prompts forked (Talos/Flux GitOps, SOPS, not gokore-derived) |
