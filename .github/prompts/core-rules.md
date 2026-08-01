@@ -1,4 +1,4 @@
-<!-- Managed by lenaxia/ai-workflows@v0.2.0 — do not edit. Override via consumers/<repo>.yaml. -->
+<!-- Managed by lenaxia/ai-workflows@v0.2.1 — do not edit. Override via consumers/<repo>.yaml. -->
 ## Core Rules
 
 These rules apply to every response. They are non-negotiable.
