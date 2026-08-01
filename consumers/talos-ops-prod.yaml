@@ -1,0 +1,46 @@
+# Consumer config for lenaxia/talos-ops-prod.
+#
+# talos-ops-prod is a production homelab Kubernetes cluster managed via GitOps
+# (Talos Linux + Flux). It uses ai-workflows for workflow PLUMBING only
+# (reusable workflows, route-command.sh, post-footer.sh, the
+# formal-blocking-review directive, concurrency collapse).
+#
+# All prompts are talos-ops-prod-specific (SOPS/age secrets, Flux Kustomization
+# + HelmRelease patterns, Traefik/Authelia middleware chains, Cilium LB IPAM,
+# bjw-s app-template, kubeconform validation). The shared templates are
+# goKore-derived and are wrong for this repo — so every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+#
+# Known tradeoff: the footer comment posted on PRs/issues is sourced from the
+# central templates/prompts/commands-footer.md (goKore-flavored examples) by
+# the reusable workflows, not this repo's forked copy. The command set is
+# identical; only the example text differs. Same behavior as containers and
+# TinyRSVP.
+
+name: talos-ops-prod
+version: v0.2.0
+
+vars:
+  project_name: talos-ops-prod
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
