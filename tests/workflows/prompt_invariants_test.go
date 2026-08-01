@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -120,7 +119,3 @@ func TestRenderedPromptsMatchTemplates(t *testing.T) {
 		}
 	}
 }
-
-// Ensure unused import suppression doesn't trigger in CI linters that scan
-// for unused symbols — runtime is used by workflowRoot in prompt_coverage_test.go.
-var _ = runtime.Caller
