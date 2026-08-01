@@ -29,9 +29,9 @@
 # pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
 #
 # NOTE on checkouts: this workflow checks out BOTH the consumer repo (default
-# checkout, for the prompts the consumer has rendered into .github/prompts/)
-# AND this central repo at the pinned version (for route-command.sh,
-# post-footer.sh, and the commands-footer.md fallback).
+# checkout, for the prompts the consumer has rendered into .github/prompts/ —
+# including commands-footer.md) AND this central repo at the pinned version
+# (for route-command.sh and post-footer.sh).
 
 name: AI Commands (reusable)
 
@@ -135,5 +135,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-          PROMPTS_DIR: .ai-workflows/templates/prompts
+          PROMPTS_DIR: .github/prompts
         run: .ai-workflows/scripts/post-footer.sh

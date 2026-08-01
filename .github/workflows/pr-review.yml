@@ -114,5 +114,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.pull_request.number }}
-          PROMPTS_DIR: .ai-workflows/templates/prompts
+          PROMPTS_DIR: .github/prompts
         run: .ai-workflows/scripts/post-footer.sh
