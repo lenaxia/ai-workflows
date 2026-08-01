@@ -29,7 +29,7 @@
 # work here. Until then only self-pr-review.yml is wired up.
 
 name: ai-workflows
-version: v0.2.0
+version: v0.2.1
 
 vars:
   project_name: ai-workflows

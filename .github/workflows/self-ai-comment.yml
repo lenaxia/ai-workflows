@@ -1,6 +1,6 @@
 # AI Commands (self / dogfood) — runs this repo's own reusable ai-comment
-# workflow on its own PRs/issues, so slash commands (/review, /ai, /fix,
-# /implement, ...) work on this repo instead of silently no-oping.
+# workflow on its own PRs, so slash commands work here instead of silently
+# no-oping.
 #
 # Why a separate file: the reusable workflow definition already occupies
 # .github/workflows/ai-comment.yml (on: workflow_call). A caller needs a
@@ -14,10 +14,17 @@
 # Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
 # OPENAI_MODEL (inherited via secrets: inherit).
 #
-# Note on prompts: this repo's .github/prompts/ currently ships context.md,
-# core-rules.md, pr-review.md, and commands-footer.md. Commands that need a
-# prompt not present there (e.g. fix.md for /fix, implement.md for /implement)
-# will fail at prompt assembly until the full prompt set is committed.
+# Serviced commands: only /review is gated because it is the only command whose
+# prompt (.github/prompts/pr-review.md) ships. The other commands (/fix,
+# /implement, /ai, ...) require prompt files that do not exist yet
+# (see consumers/ai-workflows.yaml "forked:" + note) — under set -euo pipefail,
+# route-command.sh's unconditional `cat` of a missing prompt file fails the
+# Build-prompt step, so gating them here would guarantee red runs. Expand the
+# filter in the SAME PR that ships those prompt files.
+#
+# Consistency contract: tests/workflows/prompt_coverage_test.go asserts that
+# every command gated in this file has its prompt file present in
+# .github/prompts/.
 name: AI Commands (self)
 
 on:
@@ -35,30 +42,8 @@ permissions:
 jobs:
   respond:
     if: |
-      (startsWith(github.event.comment.body, '/ai') ||
-       startsWith(github.event.comment.body, '/review') ||
-       startsWith(github.event.comment.body, '/fix') ||
-       startsWith(github.event.comment.body, '/implement') ||
-       startsWith(github.event.comment.body, '/analyze') ||
-       startsWith(github.event.comment.body, '/test') ||
-       startsWith(github.event.comment.body, '/security') ||
-       startsWith(github.event.comment.body, '/explain') ||
-       startsWith(github.event.comment.body, '/triage') ||
-       startsWith(github.event.comment.body, '/help') ||
-       startsWith(github.event.comment.body, '/design') ||
-       startsWith(github.event.comment.body, '/merge') ||
-       contains(github.event.comment.body, ' /ai') ||
-       contains(github.event.comment.body, ' /review') ||
-       contains(github.event.comment.body, ' /fix') ||
-       contains(github.event.comment.body, ' /implement') ||
-       contains(github.event.comment.body, ' /analyze') ||
-       contains(github.event.comment.body, ' /test') ||
-       contains(github.event.comment.body, ' /security') ||
-       contains(github.event.comment.body, ' /explain') ||
-       contains(github.event.comment.body, ' /triage') ||
-       contains(github.event.comment.body, ' /help') ||
-       contains(github.event.comment.body, ' /design') ||
-       contains(github.event.comment.body, ' /merge')) &&
+      (startsWith(github.event.comment.body, '/review') ||
+       contains(github.event.comment.body, ' /review')) &&
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR')
