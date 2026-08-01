@@ -224,6 +224,18 @@ jobs:
       project_name: myrepo
 ```
 
+**Self-hosted runners:** all three reusable workflows accept an optional `runs_on`
+input (defaults to `ubuntu-latest`). If your repo runs CI on a self-hosted runner
+label (e.g. gokore uses `gokore-runner`), pass it so AI jobs stay on your runner
+instead of silently moving to GitHub-hosted runners:
+
+```yaml
+    with:
+      version: v0.2.0
+      project_name: myrepo
+      runs_on: gokore-runner
+```
+
 ### 4. Set up secrets and variables in the consumer repo
 
 | Setting | Type | Purpose |
@@ -392,6 +404,7 @@ This is pre-existing behavior, not a bug. Code changes should go through
 | `Run OpenCode` fails: `could not read Username` | `issue-opened.yml` has `contents: read` — AI tried to push | Expected; use `/implement` or `/fix` for code changes |
 | Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
 | `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |
+| AI job runs on GitHub-hosted runner instead of self-hosted | Caller didn't pass `runs_on` (defaults to `ubuntu-latest`) | Pass `runs_on: <your-label>` in the caller's `with:` |
 
 ## Consumers
 

@@ -21,9 +21,12 @@
 #       with:
 #         version: v0.2.0
 #         project_name: myrepo
+#         runs_on: ubuntu-latest    # optional; self-hosted consumers pass their label
 #
 # The `uses:` ref MUST be a hardcoded tag (no vars context — see README
 # Lessons Learned #1). The `if:` filter must stay in the caller (see #4).
+# `runs_on` defaults to ubuntu-latest; self-hosted consumers (e.g. gokore)
+# pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
 #
 # NOTE on checkouts: this workflow checks out BOTH the consumer repo (default
 # checkout, for the prompts the consumer has rendered into .github/prompts/)
@@ -43,10 +46,15 @@ on:
         description: "Consumer project name (injected into prompt context)"
         type: string
         required: true
+      runs_on:
+        description: "Runner label(s) for the job (default ubuntu-latest). Self-hosted consumers pass their own label."
+        type: string
+        required: false
+        default: ubuntu-latest
 
 jobs:
   respond:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     concurrency:
       group: >-
         ${{ (startsWith(github.event.comment.body, '/review')
