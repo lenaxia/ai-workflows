@@ -424,7 +424,7 @@ jobs:
       - name: Skip sync PR (no PAT)
         if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode != 'pat'
         run: |
-          echo "::warning::Cannot open a cross-repo sync PR in ${{ matrix.consumer }} without AI_WORKFLOWS_PAT (GITHUB_TOKEN can't open PRs in other repos). The rendered/bumped changes were computed in the runner workspace (see the Render into consumer and Bump tag steps above) but were NOT pushed. Set AI_WORKFLOWS_PAT (a PAT with repo + workflow scope) and re-run this workflow to deliver v${{ steps.ver.outputs.v }} to ${{ matrix.consumer }}."
+          echo "::warning::Cannot open a cross-repo sync PR in ${{ matrix.consumer }} without AI_WORKFLOWS_PAT (GITHUB_TOKEN can't open PRs in other repos). The rendered/bumped changes were computed in the runner workspace (see the Render into consumer and Bump tag steps above) but were NOT pushed. Set AI_WORKFLOWS_PAT (a PAT with repo + workflow scope) and re-run this workflow to deliver ${{ steps.ver.outputs.v }} to ${{ matrix.consumer }}."
 
       - name: Update AI_WORKFLOWS_PIN variable (audit record)
         # The functional pin is the hardcoded @<tag> in the workflow files
