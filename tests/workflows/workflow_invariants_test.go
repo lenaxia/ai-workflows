@@ -712,6 +712,48 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 	}
 }
 
+// TestPropagateWarningsHaveNoDoubleV asserts no ::warning:: or ::error::
+// string in propagate.yml contains the pattern `v${{ steps.ver.outputs.v }}`
+// or `v${NEW_TAG}` — both produce a literal `vvX.Y.Z` in the rendered
+// warning because the version source already carries the `v` prefix
+// (`steps.ver.outputs.v` = `${GITHUB_REF##*/}` = `v0.2.7`; `NEW_TAG` is
+// sourced from the same output).
+//
+// This is a regression guard for the twin defects caught on PR #24's
+// review: the dogfood-bump skip warning (line ~216) and the consumer-sync
+// skip warning (line ~427) both had `v${...}`, producing `vv0.2.7` in
+// real run logs. A single grep-level check catches both present and any
+// future twins.
+func TestPropagateWarningsHaveNoDoubleV(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+
+	// `v\$\{\{ *steps\.ver\.outputs\.v` — matches `v${{ steps.ver.outputs.v }}`
+	// with optional spaces after `{{` (GitHub Actions expression whitespace
+	// is lenient). The literal `v` before `${{` is the defect: the
+	// expression itself evaluates to `v0.2.7`, so the prefix produces
+	// `vv0.2.7`.
+	reVerExp := regexp.MustCompile("v\\$\\{\\{ *steps\\.ver\\.outputs\\.v")
+
+	// `v\$\{NEW_TAG\}` — same defect in the dogfood-bump job's bash context
+	// (NEW_TAG is a shell variable sourced from steps.ver.outputs.v).
+	reNewTag := regexp.MustCompile("v\\$\\{NEW_TAG\\}")
+
+	for _, line := range strings.Split(body, "\n") {
+		if loc := reVerExp.FindStringIndex(line); loc != nil {
+			t.Errorf("propagate.yml: line contains a double-v defect `v${{ steps.ver.outputs.v }}`:\n  %s\n"+
+				"`steps.ver.outputs.v` already evaluates to `vX.Y.Z` (the tag ref includes the `v`); "+
+				"the literal `v` prefix produces `vvX.Y.Z` in the rendered warning. Drop the leading `v`.",
+				strings.TrimSpace(line))
+		}
+		if loc := reNewTag.FindStringIndex(line); loc != nil {
+			t.Errorf("propagate.yml: line contains a double-v defect `v${NEW_TAG}`:\n  %s\n"+
+				"NEW_TAG is sourced from steps.ver.outputs.v (which is `vX.Y.Z`); the literal `v` "+
+				"prefix produces `vvX.Y.Z`. Drop the leading `v`.",
+				strings.TrimSpace(line))
+		}
+	}
+}
+
 // TestPropagateMatrixConsumersHaveConfigFiles asserts every consumer named
 // in the propagate matrix has a matching consumers/<name>.yaml config file.
 // ai-sync render looks up the config by the exact consumer name passed on
