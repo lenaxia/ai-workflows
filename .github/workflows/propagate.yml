@@ -213,7 +213,7 @@ jobs:
         env:
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
-          echo "::warning::AI_WORKFLOWS_PAT is not set - computed the v${NEW_TAG} dogfood-bump (see the Bump dogfood pins + Regenerate rendered prompts step diffs above) but CANNOT push it. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no permissions: key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually (see PR #20 for the exact process: sed + ai-sync render + commit + push + PR)."
+          echo "::warning::AI_WORKFLOWS_PAT is not set - computed the ${NEW_TAG} dogfood-bump (see the Bump dogfood pins + Regenerate rendered prompts step diffs above) but CANNOT push it. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no permissions: key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually (see PR #20 for the exact process: sed + ai-sync render + commit + push + PR)."
 
       - name: Warn on test failure
         if: steps.changes.outputs.changed == 'true' && steps.tests.outcome != 'success'
