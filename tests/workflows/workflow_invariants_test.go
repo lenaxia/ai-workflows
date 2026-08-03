@@ -500,33 +500,212 @@ func TestPropagateHasDogfoodBumpJob(t *testing.T) {
 }
 
 // extractJobBlock returns the body of a top-level job (from `  <name>:` at
-// two spaces of indentation up to the next top-level key or end-of-file).
-// It's a deliberately small scanner paired with hasJob above.
+// exactly two spaces of indentation up to the next sibling job key at the
+// same indentation, or end-of-file). It's a deliberately small scanner
+// paired with hasJob above.
+//
+// IMPORTANT boundary: the loop must terminate at the next line that is a
+// YAML key at exactly two spaces of indent (e.g. `  propagate:` when
+// extracting `dogfood-bump`), NOT at "any non-indented line" — because all
+// job content (including the next sibling job's key) is indented relative
+// to column 0, a column-0 terminator never fires and the helper would
+// silently return the whole rest of the file. That made
+// TestPropagateHasDogfoodBumpJob pass by accident (its substrings happened
+// to also appear in the `propagate` body); isSiblingJobKey restores the
+// precise scoping the doc comment always promised.
 func extractJobBlock(body, name string) string {
 	header := "  " + name + ":"
 	start := strings.Index(body, header+"\n")
 	if start < 0 {
 		// also accept the key being the last thing in the file with no trailing newline
-		start = strings.Index(body, header)
-		if start < 0 || start+len(header) != len(body) {
+		if strings.HasSuffix(body, header) {
+			start = len(body) - len(header)
+		} else {
 			return ""
 		}
 	}
 	rest := body[start+len(header):]
-	// The job body is everything indented at least 2 spaces (or blank lines),
-	// up to the next top-level key (a non-blank line starting at column 0).
 	var out strings.Builder
 	for _, line := range strings.Split(rest, "\n") {
-		if line == "" {
-			out.WriteString(line + "\n")
-			continue
+		if isSiblingJobKey(line) {
+			break
 		}
-		if len(line) >= 2 && (line[0:2] == "  " || line[0] == ' ' || line[0] == '\t') {
-			out.WriteString(line + "\n")
-			continue
-		}
-		// First non-blank, non-indented line ends the job block.
-		break
+		out.WriteString(line + "\n")
 	}
 	return out.String()
+}
+
+// isSiblingJobKey reports whether line is a YAML key at exactly two spaces
+// of indentation matching the shape of a job name under `jobs:` (e.g.
+// `  propagate:`, `  dogfood-bump:`). Used by extractJobBlock to find where
+// one job body ends and the next sibling begins. It rejects:
+//   - inline-valued keys like `  if: foo` (a job key has NO inline value;
+//     its value is the indented block below)
+//   - keys at any other indentation (0, 4, 6, ... spaces)
+//   - job names containing characters outside [A-Za-z0-9_-] (this repo's
+//     convention; narrows the match so a stray `  - name:` step header at
+//     2 spaces — which never happens in well-formed YAML anyway — can't
+//     terminate a block early)
+func isSiblingJobKey(line string) bool {
+	// Need at least "  x:" (4 chars) and exactly two leading spaces.
+	if len(line) < 4 || line[0] != ' ' || line[1] != ' ' || line[2] == ' ' || line[2] == '\t' {
+		return false
+	}
+	rest := line[2:]
+	if !strings.HasSuffix(rest, ":") {
+		return false
+	}
+	ident := strings.TrimSuffix(rest, ":")
+	if ident == "" || strings.ContainsAny(ident, " \t") {
+		// inline value present (e.g. "  if: foo") or empty key — not a job key
+		return false
+	}
+	for _, r := range ident {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// TestExtractJobBlockBoundary is the hermetic regression test for the
+// extractJobBlock helper itself. Before the isSiblingJobKey fix, the helper
+// over-extracted (it never hit a column-0 line, so it returned the entire
+// rest of the file), which made TestPropagateHasDogfoodBumpJob assert
+// "substring appears in dogfood-bump-OR-propagate" instead of "in
+// dogfood-bump" — a silent false-negative in a repo whose value
+// proposition is catching workflow drift. This test pins the precise
+// boundary with a hand-built fixture.
+func TestExtractJobBlockBoundary(t *testing.T) {
+	const fixture = `name: Test
+on:
+  push:
+jobs:
+  dogfood-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only-in-dogfood
+        run: echo dogfood-marker
+  propagate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only-in-propagate
+        run: echo propagate-marker
+`
+
+	got := extractJobBlock(fixture, "dogfood-bump")
+	if !strings.Contains(got, "dogfood-marker") {
+		t.Errorf("extractJobBlock lost the dogfood-bump body: got %q", got)
+	}
+	if strings.Contains(got, "propagate-marker") {
+		t.Errorf("extractJobBlock over-extracted: the propagate body leaked in. "+
+			"got %q\nThis is the exact boundary bug the reviewer on PR #21 caught: "+
+			"the helper must stop at the next sibling job key (`  propagate:`), "+
+			"not at a column-0 line that never fires.", got)
+	}
+	if strings.Contains(got, "  propagate:") {
+		t.Errorf("extractJobBlock did not terminate at the `  propagate:` sibling key. "+
+			"got %q", got)
+	}
+}
+
+// TestPropagatePRUsesResolvedBaseBranch asserts the 'Open sync PR' step
+// does NOT hardcode `--base main`. Consumers may use a different default
+// branch; the pre-fix code assumed `main` everywhere. The fix added a
+// 'Resolve default branch' step that asks the API, and the PR step now
+// passes `--base "${{ steps.base.outputs.branch }}"`.
+//
+// This test locks the fix the PR body claims but (per the PR #21 review)
+// was originally not regression-guarded.
+func TestPropagatePRUsesResolvedBaseBranch(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+	prStep := stepBlock(body, "Open sync PR")
+	if prStep == "" {
+		t.Fatal("propagate.yml: no 'Open sync PR' step found - workflow structure changed; update this test")
+	}
+
+	// The literal "--base main" anywhere in the step is the regression
+	// signature: it means the dynamic resolution was reverted in favor of
+	// the hardcoded branch.
+	if strings.Contains(prStep, "--base main") {
+		t.Errorf("propagate.yml: 'Open sync PR' step contains a hardcoded `--base main`.\n" +
+			"This assumes every consumer's default branch is `main`; the first consumer " +
+			"whose default branch differs would get its sync PR opened against a nonexistent base. " +
+			"Use `--base \"${{ steps.base.outputs.branch }}\"` driven by the 'Resolve default branch' step.")
+	}
+
+	if !strings.Contains(prStep, "steps.base.outputs.branch") {
+		t.Errorf("propagate.yml: 'Open sync PR' step does not reference steps.base.outputs.branch.\n" +
+			"The base branch must come from the 'Resolve default branch' step so consumers " +
+			"whose default branch is not `main` are handled correctly.")
+	}
+
+	// And the resolver step itself must exist and consult the API.
+	baseStep := stepBlock(body, "Resolve default branch")
+	if baseStep == "" {
+		t.Fatal("propagate.yml: no 'Resolve default branch' step found.\n" +
+			"This step resolves the consumer's actual default branch via the API; without it, " +
+			"steps.base.outputs.branch would be empty and the PR step would fail.")
+	}
+	if !strings.Contains(baseStep, "default_branch") || !strings.Contains(baseStep, "gh api") {
+		t.Errorf("propagate.yml: 'Resolve default branch' step does not consult the GitHub API for the default branch.\n"+
+			"Step body was:\n%s", baseStep)
+	}
+}
+
+// TestPropagateBumpStepUsesMultiFileDiscovery asserts the 'Bump tag in
+// consumer workflow files' step discovers the existing pin (OLD_TAG) by
+// scanning multiple workflow files in order, not just ai-comment.yml. The
+// pre-fix code grepped only ai-comment.yml; if a consumer lacked that file
+// the variable came back empty and the whole bump silently no-op'd (the
+// sed ran on no files).
+//
+// This test locks the fix the PR body claims but (per the PR #21 review)
+// was originally not regression-guarded.
+//
+// Precision note: the step contains TWO `for wf in ...` loops — one for
+// OLD_TAG discovery (grep) and one for sed application. Both reference the
+// three workflow files, so a naive "step contains pr-review.yml" assertion
+// passes even when discovery is reverted to ai-comment.yml-only (the
+// application loop still has it). This test instead pins the exact
+// discovery-loop header line, which is the one that actually feeds the
+// grep. If a future refactor reorders the files, the test name tells the
+// maintainer exactly what to update.
+func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+	bumpStep := stepBlock(body, "Bump tag in consumer workflow files")
+	if bumpStep == "" {
+		t.Fatal("propagate.yml: no 'Bump tag in consumer workflow files' step found - workflow structure changed; update this test")
+	}
+
+	// The discovery loop is the `for wf in ...` line that precedes the
+	// `OLD_TAG=` assignment. Pin its exact shape: all three consumer
+	// workflow files in the discovery order. This is what makes OLD_TAG
+	// discovery robust against consumers that lack ai-comment.yml.
+	const discoveryLoopHeader = "for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml; do"
+	if !strings.Contains(bumpStep, discoveryLoopHeader) {
+		t.Errorf("propagate.yml: 'Bump tag' step is missing the multi-file discovery loop header.\n"+
+			"Expected to find: %q\n"+
+			"A single-file discovery (ai-comment.yml only) would silently no-op the pin bump "+
+			"for any consumer that lacks ai-comment.yml: OLD_TAG comes back empty, the `if [ -n \"$OLD_TAG\" ]` "+
+			"guard fails, and sed runs on zero files. The fix discovers OLD_TAG from whichever of the three "+
+			"workflow files the consumer actually has.\nStep body was:\n%s", discoveryLoopHeader, bumpStep)
+	}
+
+	// The discovery regex must accept BOTH pin shapes this repo's consumers
+	// use: a 40-char SHA pin and a vX.Y.Z tag pin. Pre-fix the regex only
+	// matched a narrower set.
+	if !strings.Contains(bumpStep, "[0-9a-f]{40}") {
+		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept a 40-char SHA pin.\n" +
+			"Consumers pinned by SHA (the repo convention) would not be discovered and the bump would no-op.")
+	}
+	if !strings.Contains(bumpStep, "v[0-9]+") {
+		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept a vX.Y.Z tag pin.\n" +
+			"Consumers pinned by tag would not be discovered and the bump would no-op.")
+	}
 }
