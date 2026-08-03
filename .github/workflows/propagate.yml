@@ -61,6 +61,15 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # workflows: write is REQUIRED because this job pushes commits that
+      # modify .github/workflows/self-pr-review.yml and self-ai-comment.yml
+      # (the dogfood pin sites). Without it, git push is rejected with
+      # "refusing to allow a GitHub App to create or update workflow ...
+      # without `workflows` permission". The consumer-matrix `propagate` job
+      # below does NOT need this: it modifies workflow files in OTHER repos
+      # via the AI_WORKFLOWS_PAT (which has workflow scope), not via
+      # GITHUB_TOKEN.
+      workflows: write
     steps:
       - name: Checkout ai-workflows (self)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -183,7 +192,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        consumer: [gokore, LLMSafeSpaces, rathena-client, tinyrsvp, containers, talos-ops-prod]
+        consumer: [gokore, llmsafespaces, rathena-client, tinyrsvp, containers, talos-ops-prod]
     steps:
       - name: Resolve target consumer
         id: target
