@@ -75,6 +75,23 @@ jobs:
           path: .ai-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Keep ai-workflows out of consumer git index
+        # The pinned ai-workflows checkout above lives INSIDE the consumer
+        # worktree — actions/checkout@v6 requires `path` to be under
+        # $GITHUB_WORKSPACE (it throws `Repository path '...' is not under
+        # the GITHUB_WORKSPACE` otherwise), so we cannot use
+        # ${{ runner.temp }}/ai-workflows. Because that nested checkout
+        # carries its own .git, opencode's end-of-run `git add -A` would
+        # otherwise sweep it into the consumer index as a gitlink (a
+        # submodule reference with no .gitmodules entry), and
+        # actions/checkout's post-job cleanup would then emit
+        # `fatal: No url found for submodule path '.ai-workflows' in
+        # .gitmodules`. Recording it in .git/info/exclude (local to this
+        # checkout, never committed) keeps the scripts readable from disk
+        # while keeping the directory out of the consumer's git index. See
+        # issue #17 (Bug B).
+        run: printf '.ai-workflows/\n' >> .git/info/exclude
+
       - name: Configure git identity
         # Self-hosted ubuntu runners in this org don't ship a default git
         # user.name/user.email, so `git commit` from the OpenCode step fails
@@ -113,6 +130,43 @@ jobs:
           use_github_token: "true"
           share: "false"
           prompt: ${{ env.OPENCODE_PROMPT }}
+        # opencode unconditionally runs a `git push` at end-of-run to persist
+        # its session/snapshot branch. Under persist-credentials: false (this
+        # workflow only REVIEWS code, never pushes it), the push dies with
+        # `fatal: could not read Username for 'https://github.com'` and
+        # opencode exits 1 — marking the job FAILED even though the review
+        # itself was posted successfully via `gh pr review`. The verify step
+        # below is now the source of truth for the job conclusion; we
+        # tolerate opencode's exit status here so the snapshot-push failure
+        # stops poisoning every approved PR's required check. See issue #17
+        # (Bug A).
+        continue-on-error: true
+
+      - name: Verify review submitted
+        # Source of truth for the job's pass/fail: was a verdict (APPROVED or
+        # CHANGES_REQUESTED) by github-actions[bot] recorded against this PR's
+        # HEAD commit? If opencode crashed before delivering a verdict, this
+        # step fails the job even though the Run OpenCode step's own exit
+        # status was masked via continue-on-error above. Conversely, if
+        # opencode posted the verdict and then died on its end-of-run push,
+        # this step passes — which is the correct outcome: the review IS the
+        # deliverable, and it landed.
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\") and .commit_id == \"${PR_HEAD_SHA}\")] | length")"
+          if [ "${count}" -eq 0 ]; then
+            echo "ERROR: no APPROVED/CHANGES_REQUESTED review by github-actions[bot] against HEAD ${PR_HEAD_SHA} found on PR #${PR_NUMBER}." >&2
+            echo "The opencode run did not deliver a verdict. Failing the job." >&2
+            exit 1
+          fi
+          echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."
 
       - name: Post AI command reference (once per thread)
         env:

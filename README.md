@@ -451,6 +451,54 @@ This is pre-existing behavior, not a bug. Code changes should go through
 `/implement` or `/fix` via `ai-comment.yml` (which has `contents: write` and
 `persist-credentials: true`).
 
+### 7. `pr-review.yml` gates its job on review delivery, not opencode's exit code
+
+The `Run OpenCode` step in `pr-review.yml` has `continue-on-error: true`, and a
+follow-up `Verify review submitted` step is the source of truth for the job's
+pass/fail. This is necessary because `anomalyco/opencode` runs an unconditional
+`git push` at end-of-run (to persist its session/snapshot branch); under
+`pr-review.yml`'s required `persist-credentials: false` (the workflow only
+**reviews** code, never pushes it), that push dies with
+`fatal: could not read Username for 'https://github.com'` and opencode exits 1.
+Without `continue-on-error`, every legitimately-approved consumer PR showed a
+permanently red `review / review` required check even though
+`gh pr review --approve` had already succeeded.
+
+The verify step queries `gh api .../pulls/N/reviews` for an `APPROVED` or
+`CHANGES_REQUESTED` verdict by `github-actions[bot]` pinned to the PR HEAD's
+`commit_id`. If opencode crashed before posting any verdict, the verify step
+fails the job (real failure mode preserved). If opencode posted the verdict and
+then died on its end-of-run push, the verify step passes — which is the
+correct outcome: the review IS the deliverable, and it landed. See issue #17.
+
+This pattern does **not** apply to `issue-opened.yml`: that workflow's
+deliverable is a comment, not a review, so there is no equivalent single event
+to gate on; the `failure` conclusion there remains expected (see #6 above).
+
+`issue-opened.yml` and `ai-comment.yml` do not need the
+`continue-on-error` + verify pattern: `ai-comment.yml` already uses
+`persist-credentials: true` (so opencode's push succeeds), and
+`issue-opened.yml`'s failure is the intended read-only pushback.
+
+### 8. Keep the `.ai-workflows` pinned checkout out of the consumer git index
+
+All three reusable workflows check out the pinned `lenaxia/ai-workflows` repo
+**inside** the consumer worktree (`path: .ai-workflows`). This is forced by
+`actions/checkout@v6`: it validates that `path` resolves under
+`$GITHUB_WORKSPACE` and throws
+`Repository path '...' is not under the GITHUB_WORKSPACE` otherwise, so
+`${{ runner.temp }}/ai-workflows` is not an option.
+
+That nested checkout carries its own `.git`. Without an exclude, opencode's
+end-of-run `git add -A` sweeps it into the consumer index as a gitlink (a
+submodule reference with no `.gitmodules` entry), and `actions/checkout`'s
+post-job cleanup then emits
+`fatal: No url found for submodule path '.ai-workflows' in .gitmodules` on every
+run. Each workflow records `.ai-workflows/` in `.git/info/exclude` (local to
+that checkout, never committed) right after the nested checkout so the
+directory stays readable from disk but never enters the consumer's git index.
+See issue #17.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -459,7 +507,9 @@ This is pre-existing behavior, not a bug. Code changes should go through
 | `startup_failure`, zero jobs, "workflow file issue" | Caller missing `permissions:` block | Add `permissions:` matching the reusable workflow's needs |
 | `startup_failure` only on one repo, same org | That repo's default workflow permissions are read-only | Add explicit `permissions:` to the caller (or set repo default to read-write) |
 | `Run OpenCode` fails: `empty ident name` | Self-hosted runner lacks git identity | Already fixed in v0.1.2 (all reusable workflows set git identity) |
-| `Run OpenCode` fails: `could not read Username` | `issue-opened.yml` has `contents: read` — AI tried to push | Expected; use `/implement` or `/fix` for code changes |
+| `Run OpenCode` fails: `could not read Username` on **issue-opened** | `issue-opened.yml` has `contents: read` — opencode's end-of-run push has no creds (and rarely, the AI also tries to push) | Expected; use `/implement` or `/fix` for code changes (see Lessons Learned #6) |
+| `Run OpenCode` fails: `could not read Username` on **pr-review** | Same end-of-run push failure, but the review itself was already posted via `gh pr review` | Already fixed in v0.2.4 — `Run OpenCode` has `continue-on-error: true` and the `Verify review submitted` step drives the job conclusion (see Lessons Learned #7). The bot comment opencode leaves on the PR ("`fatal: could not read Username...`") is cosmetic noise from opencode echoing the push failure as a comment and can be ignored. |
+| `fatal: No url found for submodule path '.ai-workflows' in .gitmodules` during cleanup | The pinned `.ai-workflows` checkout was swept into the consumer index as a gitlink by opencode's end-of-run `git add -A` | Already fixed in v0.2.4 — every reusable workflow writes `.ai-workflows/` to `.git/info/exclude` after the nested checkout (see Lessons Learned #8) |
 | Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
 | `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |
 | AI job runs on GitHub-hosted runner instead of self-hosted | Caller didn't pass `runs_on` (defaults to `ubuntu-latest`) | Pass `runs_on: <your-label>` in the caller's `with:` |
