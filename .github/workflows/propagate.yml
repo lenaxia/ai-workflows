@@ -61,21 +61,32 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      # workflows: write is REQUIRED because this job pushes commits that
-      # modify .github/workflows/self-pr-review.yml and self-ai-comment.yml
-      # (the dogfood pin sites). Without it, git push is rejected with
-      # "refusing to allow a GitHub App to create or update workflow ...
-      # without `workflows` permission". The consumer-matrix `propagate` job
-      # below does NOT need this: it modifies workflow files in OTHER repos
-      # via the AI_WORKFLOWS_PAT (which has workflow scope), not via
-      # GITHUB_TOKEN.
-      workflows: write
     steps:
+      - name: Resolve auth (dogfood-bump)
+        # The dogfood-bump commit modifies .github/workflows/self-*.yml
+        # (the dogfood pin sites). The GITHUB_TOKEN CANNOT push commits
+        # that touch .github/workflows/* - this is a policy-level
+        # restriction on all GitHub-App-backed tokens, NOT a scope issue,
+        # so no `permissions:` key can override it. Only a PAT with
+        # `workflow` scope (AI_WORKFLOWS_PAT) can push such a commit.
+        # When the PAT is absent, the push step below is skipped with a
+        # ::warning:: (same graceful-degradation pattern as the consumer
+        # propagate job). The org admin must set AI_WORKFLOWS_PAT for
+        # fully-automated dogfood-bump.
+        id: auth
+        env:
+          PAT: ${{ secrets.AI_WORKFLOWS_PAT }}
+        run: |
+          if [ -n "$PAT" ]; then
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+            echo "Resolved auth: AI_WORKFLOWS_PAT (can push workflow-file changes)"
+          else
+            echo "mode=no-pat" >> "$GITHUB_OUTPUT"
+            echo "::warning::AI_WORKFLOWS_PAT is not set - the dogfood-bump job computes the pin bump + re-render locally but CANNOT push the result. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no `permissions:` key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually as in PR #20."
+          fi
+
       - name: Checkout ai-workflows (self)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          # persist-credentials: true - this job pushes a branch + opens a PR.
-          persist-credentials: true
 
       - name: Resolve version
         id: ver
@@ -145,12 +156,22 @@ jobs:
           fi
 
       - name: Open dogfood-bump PR
-        if: steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
+        # Only runs when AI_WORKFLOWS_PAT is available: the commit modifies
+        # .github/workflows/self-*.yml, which the GITHUB_TOKEN is
+        # policy-restricted from pushing (no `permissions:` key overrides
+        # this). The PAT has `workflow` scope and can push it.
+        if: steps.auth.outputs.mode == 'pat' && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
           set -euo pipefail
+          # Configure git to push as the PAT-bearing identity (the default
+          # checkout credential helper uses GITHUB_TOKEN, which the push
+          # step would reject for the workflow-file policy).
+          git config --global --replace-all \
+            url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
           BRANCH="sync/dogfood-pins-${NEW_TAG}"
           git checkout -b "$BRANCH"
           git config user.name  "github-actions[bot]"
@@ -180,6 +201,19 @@ jobs:
             --base main \
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated dogfood-bump to ${NEW_TAG} (re-targeted existing PR)."
+
+      - name: Skip dogfood-bump PR (no PAT)
+        # Graceful degradation: without AI_WORKFLOWS_PAT the bump is computed
+        # (the Bump dogfood pins + Regenerate rendered prompts steps above
+        # ran and their diff is visible in the run log via the Detect
+        # changes step) but NOT pushed. The operator applies it manually
+        # (the exact manual process is documented in PR #20) or sets the
+        # PAT and re-runs.
+        if: steps.auth.outputs.mode != 'pat' && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
+        env:
+          NEW_TAG: ${{ steps.ver.outputs.v }}
+        run: |
+          echo "::warning::AI_WORKFLOWS_PAT is not set - computed the v${NEW_TAG} dogfood-bump (see the Bump dogfood pins + Regenerate rendered prompts step diffs above) but CANNOT push it. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no permissions: key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually (see PR #20 for the exact process: sed + ai-sync render + commit + push + PR)."
 
       - name: Warn on test failure
         if: steps.changes.outputs.changed == 'true' && steps.tests.outcome != 'success'

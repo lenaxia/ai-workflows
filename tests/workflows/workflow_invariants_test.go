@@ -769,31 +769,86 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 	}
 }
 
-// TestPropagateDogfoodBumpHasWorkflowsPermission asserts the dogfood-bump
-// job declares `workflows: write` in its permissions. The job pushes
-// commits that modify .github/workflows/self-pr-review.yml and
-// self-ai-comment.yml (the dogfood pin sites); without workflows
-// permission, git push is rejected with "refusing to allow a GitHub App
-// to create or update workflow ... without `workflows` permission".
+// TestPropagateDogfoodBumpPRGatedOnPAT asserts the dogfood-bump job gates
+// its push/PR step on AI_WORKFLOWS_PAT being available. The job's commit
+// modifies .github/workflows/self-*.yml (the dogfood pin sites); the
+// GITHUB_TOKEN is POLICY-restricted from pushing workflow-file changes
+// (no `permissions:` key overrides this — it's a GitHub-App-token-level
+// restriction, not a scope issue), so only a PAT with `workflow` scope
+// can push it.
 //
-// The consumer-matrix `propagate` job does NOT need this permission: it
-// modifies workflow files in OTHER repos via AI_WORKFLOWS_PAT (which has
-// workflow scope), not via GITHUB_TOKEN. So the assertion is scoped to the
-// dogfood-bump job only.
-func TestPropagateDogfoodBumpHasWorkflowsPermission(t *testing.T) {
+// An earlier iteration of this fix tried to declare `workflows: write` in
+// the job's permissions block. That key does not exist in the GITHUB_TOKEN
+// permission set (the valid keys are actions, checks, contents,
+// deployments, id-token, issues, packages, pages, pull-requests,
+// repository-projects, security-events, statuses) and the unknown key made
+// GitHub Actions reject the whole workflow with a "workflow file issue"
+// startup failure — blocking EVERY propagate run (v0.2.6 included). This
+// test now locks the correct shape: a Resolve auth token step + a PR step
+// gated on mode == 'pat' + a Skip step for the no-PAT case.
+func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
 	jobBlock := extractJobBlock(body, "dogfood-bump")
 	if jobBlock == "" {
 		t.Fatal("propagate.yml: no 'dogfood-bump' job found - workflow structure changed; update this test")
 	}
-	// The permissions block is a YAML mapping under the job. We assert the
-	// `workflows: write` key appears in the job body. A substring check is
-	// sufficient and matches the style of the other invariant tests.
-	if !strings.Contains(jobBlock, "workflows: write") {
-		t.Errorf("propagate.yml: 'dogfood-bump' job is missing `workflows: write` in its permissions.\n" +
-			"The job pushes commits that modify .github/workflows/self-*.yml; without workflows permission, " +
-			"git push is rejected with 'refusing to allow a GitHub App to create or update workflow ... " +
-			"without workflows permission'. This is the exact failure that blocked the v0.2.5 dogfood-bump " +
-			"run (job 91720974727).")
+
+	// `workflows:` is NOT a valid GITHUB_TOKEN permission key. Its presence
+	// causes a "workflow file issue" startup failure (GitHub rejects unknown
+	// permission keys). This is the exact bug that blocked v0.2.6's
+	// propagate run.
+	if strings.Contains(jobBlock, "workflows: write") || strings.Contains(jobBlock, "workflows: read") {
+		t.Errorf("propagate.yml: 'dogfood-bump' job declares a `workflows:` permission.\n" +
+			"`workflows` is NOT a valid GITHUB_TOKEN permission key (valid keys: actions, " +
+			"checks, contents, deployments, id-token, issues, packages, pages, " +
+			"pull-requests, repository-projects, security-events, statuses). Its presence " +
+			"makes GitHub Actions reject the whole workflow with a 'workflow file issue' " +
+			"startup failure. The dogfood-bump commit touches .github/workflows/self-*.yml, " +
+			"which the GITHUB_TOKEN is POLICY-restricted from pushing — no permissions key " +
+			"overrides this. The push must use AI_WORKFLOWS_PAT (see the Resolve auth token " +
+			"step + the mode == 'pat' gate on the Open dogfood-bump PR step).")
+	}
+
+	// The dogfood-bump job must have its own PAT-resolution pattern (the
+	// consumer-matrix job has a separate Resolve auth token step). Confirm
+	// the dogfood-bump block contains the mode=pat / mode=no-pat outputs.
+	if !strings.Contains(jobBlock, "mode=pat") || !strings.Contains(jobBlock, "mode=no-pat") {
+		t.Errorf("propagate.yml: 'dogfood-bump' job is missing a PAT-resolution step emitting mode=pat / mode=no-pat.\n" +
+			"The push step must be gated on mode == 'pat' so the no-PAT case skips with a " +
+			"::warning:: instead of failing the job.")
+	}
+
+	// The Open dogfood-bump PR step must be gated on mode == 'pat'.
+	prStep := stepBlock(body, "Open dogfood-bump PR")
+	if prStep == "" {
+		t.Fatal("propagate.yml: no 'Open dogfood-bump PR' step found - workflow structure changed; update this test")
+	}
+	prIf := ""
+	for _, line := range strings.Split(strings.TrimPrefix(prStep, "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "if:") {
+			prIf = trimmed
+			break
+		}
+	}
+	if prIf == "" {
+		t.Errorf("propagate.yml: 'Open dogfood-bump PR' step has no if: directive.\n" +
+			"It must gate on steps.auth.outputs.mode == 'pat' so the workflow-file " +
+			"push is only attempted with a PAT that has workflow scope.")
+	} else if !strings.Contains(prIf, "mode == 'pat'") {
+		t.Errorf("propagate.yml: 'Open dogfood-bump PR' if: line is `%s` but does not gate on mode == 'pat'.\n"+
+			"Without that gate, the push runs with GITHUB_TOKEN (which is policy-restricted "+
+			"from pushing .github/workflows/* changes) and fails. if: line was:\n%s", prIf, prIf)
+	}
+
+	// The Skip dogfood-bump PR (no PAT) step must exist as the complement.
+	skipStep := stepBlock(body, "Skip dogfood-bump PR (no PAT)")
+	if skipStep == "" {
+		t.Error("propagate.yml: no 'Skip dogfood-bump PR (no PAT)' step found.\n" +
+			"This is the graceful-degradation branch: when AI_WORKFLOWS_PAT is not set, " +
+			"the push is skipped and this step emits a ::warning:: with the remediation.")
 	}
 }
