@@ -1,17 +1,36 @@
 # Propagate — on tag push, render all consumers and open sync PRs.
 #
-# When a new ai-workflows version is tagged (v0.1.2 → v0.2.0), this workflow:
+# When a new ai-workflows version is tagged (v0.1.2 -> v0.2.0), this workflow:
 #   1. Renders every consumer's prompt files using the new templates
 #   2. Bumps the @<tag> and version: in each consumer's workflow files via sed
-#      (the uses: ref is a hardcoded literal — no vars indirection is possible)
+#      (the uses: ref is a hardcoded literal - no vars indirection is possible)
 #   3. Opens a PR in each consumer repo with both changes (prompts + pin bump)
 #
-# The PRs are NOT auto-merged (per design decision: review each sync). Consumers
-# can enable auto-merge individually if they choose.
+# It also bumps THIS repo's own dogfood pins (self-pr-review.yml,
+# self-ai-comment.yml, consumers/ai-workflows.yaml) and regenerates the
+# rendered prompts that carry the version banner - opening a self-PR for
+# review. Without that dogfood-bump job the pins silently drift (they were
+# stuck at v0.2.1 across v0.2.2/v0.2.3 until PR #20 caught them up manually).
+#
+# The PRs are NOT auto-merged (per design decision: review each sync).
+# Consumers can enable auto-merge individually if they choose.
 #
 # Triggered manually via workflow_dispatch for testing, or by tag push.
-# A PAT with repo + workflow scope must be stored as AI_WORKFLOWS_PAT secret
-# in THIS repo (the default GITHUB_TOKEN can't open PRs in OTHER repos).
+#
+# AUTH:
+#   Cross-repo operations (checkout of a PRIVATE consumer, opening a PR in
+#   any consumer) require AI_WORKFLOWS_PAT - a PAT with repo + workflow scope
+#   stored as a secret in THIS repo. The default GITHUB_TOKEN can't do those.
+#   If AI_WORKFLOWS_PAT is unset, the workflow degrades gracefully instead of
+#   failing with a cryptic "Input required and not supplied: token":
+#     - public-consumer checkout + render + diff still run (via GITHUB_TOKEN
+#       fallback), so the run summary reports what WOULD change
+#     - the cross-repo PR step is skipped with a visible ::warning::
+#     - the dogfood-bump job (same-repo) runs regardless - it only needs
+#       GITHUB_TOKEN
+#   Pre-this-fix, propagate had been failing on every release since v0.2.2
+#   with "Input required and not supplied: token" the moment AI_WORKFLOWS_PAT
+#   was empty - blocking all consumer sync.
 
 name: Propagate
 
@@ -28,6 +47,137 @@ on:
         required: false
 
 jobs:
+  # dogfood-bump catches THIS repo's own dogfood pins up to the just-pushed
+  # tag and regenerates the rendered prompts whose banner embeds the version.
+  # It runs on the default GITHUB_TOKEN (same-repo), so it works even when
+  # AI_WORKFLOWS_PAT is not set. The consumer-matrix `propagate` job below
+  # handles OTHER repos; this job handles the dogfood repo itself.
+  #
+  # Skipped on single-consumer workflow_dispatch (nothing to dogfood-bump
+  # for one consumer).
+  dogfood-bump:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.consumer == '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout ai-workflows (self)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # persist-credentials: true - this job pushes a branch + opens a PR.
+          persist-credentials: true
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            v="${{ github.event.inputs.version }}"
+          else
+            # refs/tags/v0.2.5 -> v0.2.5
+            v="${GITHUB_REF##*/}"
+          fi
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $v"
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26'
+
+      - name: Build ai-sync
+        run: go build -o /tmp/ai-sync ./scripts/ai-sync
+
+      - name: Bump dogfood pins
+        # Bump all v0.x.x tokens in the three dogfood pin sites to the new
+        # version. tests/workflows/pin_consistency_test.go::TestDogfoodPinsAreConsistent
+        # guards that these stay in lockstep, so a partial bump fails CI.
+        run: |
+          set -euo pipefail
+          NEW_TAG="${{ steps.ver.outputs.v }}"
+          for f in \
+            consumers/ai-workflows.yaml \
+            .github/workflows/self-pr-review.yml \
+            .github/workflows/self-ai-comment.yml; do
+            # Replace every vX.Y.Z token in the file with the new tag. These
+            # files contain only version tokens for THIS repo's dogfood pin
+            # (no unrelated vX.Y.Z strings), so a global replace is safe.
+            sed -i "s|v[0-9]\+\.[0-9]\+\.[0-9]\+|${NEW_TAG}|g" "$f"
+          done
+          echo "Bumped dogfood pins to ${NEW_TAG}."
+
+      - name: Regenerate rendered prompts
+        # The ai-sync renderer injects a "Managed by lenaxia/ai-workflows@vX.Y.Z"
+        # banner from the consumer's version field. Re-render so the banner
+        # matches the new tag. tests/workflows/prompt_invariants_test.go::
+        # TestRenderedPromptsMatchTemplates guards byte-equality.
+        run: |
+          set -euo pipefail
+          /tmp/ai-sync render \
+            --consumer ai-workflows \
+            --into .github/prompts \
+            --repo-root .
+
+      - name: Verify tests still pass
+        # Belt-and-suspenders: don't open a PR with a broken pin/render state.
+        # TestDogfoodPinsAreConsistent + TestRenderedPromptsMatchTemplates both
+        # run here; if they fail, the PR step below is skipped via if:.
+        id: tests
+        continue-on-error: true
+        run: go test ./tests/workflows/...
+
+      - name: Detect changes
+        id: changes
+        run: |
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open dogfood-bump PR
+        if: steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_TAG: ${{ steps.ver.outputs.v }}
+        run: |
+          set -euo pipefail
+          BRANCH="sync/dogfood-pins-${NEW_TAG}"
+          git checkout -b "$BRANCH"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(release): bump dogfood pins to ${NEW_TAG}
+
+          Auto-generated by propagate.yml (dogfood-bump job) on tag ${NEW_TAG}.
+          Catches this repo's own dogfood pin sites up to ${NEW_TAG} in lockstep
+          and regenerates the rendered-prompt banners so
+          TestRenderedPromptsMatchTemplates stays green.
+
+          Guarded by TestDogfoodPinsAreConsistent."
+          git push --force-with-lease origin "$BRANCH"
+          gh pr create \
+            --title "chore(release): bump dogfood pins to ${NEW_TAG}" \
+            --body "Auto-generated by \`propagate.yml\` (dogfood-bump job) on tag \`${NEW_TAG}\`.
+
+          Bumps the dogfood pin sites in lockstep (guarded by \`TestDogfoodPinsAreConsistent\`):
+          - \`consumers/ai-workflows.yaml\`
+          - \`.github/workflows/self-pr-review.yml\`
+          - \`.github/workflows/self-ai-comment.yml\`
+
+          Regenerates the ai-sync-rendered prompt banners so \`TestRenderedPromptsMatchTemplates\` stays green.
+
+          This job exists because \`propagate.yml\`'s consumer matrix handles OTHER repos but historically did not bump THIS repo's own dogfood pins - leaving them stuck at v0.2.1 across v0.2.2/v0.2.3 (PR #20 caught them up manually; this job prevents the next drift)." \
+            --base main \
+            --head "$BRANCH" || \
+          gh pr edit "$BRANCH" --body "Updated dogfood-bump to ${NEW_TAG} (re-targeted existing PR)."
+
+      - name: Warn on test failure
+        if: steps.changes.outputs.changed == 'true' && steps.tests.outcome != 'success'
+        run: |
+          echo "::warning::go test ./tests/workflows/... failed after the pin bump + re-render. Skipping the dogfood-bump PR so a broken state is not proposed for merge. Inspect the Verify tests still pass step above."
+
+  # propagate handles the OTHER repos (the consumer matrix).
   propagate:
     runs-on: ubuntu-latest
     strategy:
@@ -53,7 +203,31 @@ jobs:
 
       - name: Skip if not targeted
         if: steps.target.outputs.skip == 'true'
-        run: echo "Skipping ${{ matrix.consumer }} — single-consumer dispatch."
+        run: echo "Skipping ${{ matrix.consumer }} - single-consumer dispatch."
+
+      - name: Resolve auth token
+        # Cross-repo checkout + cross-repo PR both need a token with access
+        # beyond this repo. AI_WORKFLOWS_PAT (a PAT with repo + workflow scope)
+        # is the canonical credential; if it is not set, fall back to the
+        # default GITHUB_TOKEN, which can read PUBLIC repos only and cannot
+        # open cross-repo PRs. The PR step below is gated on mode == 'pat'.
+        # Pre-this-fix, an empty AI_WORKFLOWS_PAT made actions/checkout@v6
+        # fail with a generic "Input required and not supplied: token".
+        id: auth
+        if: steps.target.outputs.skip != 'true'
+        env:
+          PAT: ${{ secrets.AI_WORKFLOWS_PAT }}
+          GT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$PAT" ]; then
+            echo "token=$PAT" >> "$GITHUB_OUTPUT"
+            echo "mode=pat" >> "$GITHUB_OUTPUT"
+            echo "Resolved auth: AI_WORKFLOWS_PAT (full cross-repo capability)"
+          else
+            echo "token=$GT" >> "$GITHUB_OUTPUT"
+            echo "mode=github-token-fallback" >> "$GITHUB_OUTPUT"
+            echo "::warning::AI_WORKFLOWS_PAT is not set - falling back to GITHUB_TOKEN. Public consumers will check out and render, but the cross-repo sync PR will be SKIPPED (GITHUB_TOKEN can't open PRs in other repos). Private consumer (gokore) checkout will fail. Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run to enable full propagation."
+          fi
 
       - name: Checkout ai-workflows
         if: steps.target.outputs.skip != 'true'
@@ -66,7 +240,7 @@ jobs:
           if [ -n "${{ github.event.inputs.version }}" ]; then
             echo "v=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
           else
-            # Use the pushed tag ref name (e.g. refs/tags/v0.2.0 → v0.2.0)
+            # Use the pushed tag ref name (e.g. refs/tags/v0.2.0 -> v0.2.0)
             echo "v=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -81,15 +255,34 @@ jobs:
         run: go build -o /tmp/ai-sync ./scripts/ai-sync
 
       - name: Checkout consumer
+        # Uses the resolved token (PAT if available, GITHUB_TOKEN otherwise).
+        # For public consumers the GITHUB_TOKEN fallback is sufficient for
+        # read access; for private consumer gokore, only the PAT works.
+        # continue-on-error so a failed private-repo checkout (no PAT) does
+        # not turn the whole matrix job red - the warning is emitted and the
+        # downstream PR step is skipped via the checkout_ok gate.
+        id: consumer_checkout
         if: steps.target.outputs.skip != 'true'
+        continue-on-error: true
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: lenaxia/${{ matrix.consumer }}
-          token: ${{ secrets.AI_WORKFLOWS_PAT }}
+          token: ${{ steps.auth.outputs.token }}
           path: consumer
 
-      - name: Render into consumer
+      - name: Record checkout status
         if: steps.target.outputs.skip != 'true'
+        id: co
+        run: |
+          if [ "${{ steps.consumer_checkout.outcome }}" = "success" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Checkout of ${{ matrix.consumer }} failed (likely private repo without AI_WORKFLOWS_PAT, or token has insufficient scope). Skipping render/bump/PR for this consumer."
+          fi
+
+      - name: Render into consumer
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true'
         run: |
           /tmp/ai-sync render \
             --consumer ${{ matrix.consumer }} \
@@ -100,13 +293,23 @@ jobs:
         # The uses: ref is a hardcoded literal (GitHub doesn't allow vars
         # context in uses:). Bump it via sed so the consumer's workflows
         # point at the new tag. Also bump the version: input to match.
-        if: steps.target.outputs.skip != 'true'
+        #
+        # OLD_TAG discovery is now robust against consumers that lack
+        # ai-comment.yml: grep the first available workflow file in a fixed
+        # order and extract the existing pin from there.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true'
         working-directory: consumer
         run: |
-          OLD_TAG=$(grep -oP 'ai-workflows/.github/workflows/\w+\.yml@\K[a-f0-9v][a-f0-9.]+' \
-            .github/workflows/ai-comment.yml | head -1)
+          set -euo pipefail
           NEW_TAG="${{ steps.ver.outputs.v }}"
-          echo "Bumping ${OLD_TAG:-<none>} → ${NEW_TAG}"
+          OLD_TAG=""
+          for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml; do
+            [ -f "$wf" ] || continue
+            # Match either a SHA pin (40 hex) or a vX.Y.Z tag pin after '@'.
+            OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/\w+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
+            [ -n "$OLD_TAG" ] && break
+          done
+          echo "Bumping ${OLD_TAG:-<none>} -> ${NEW_TAG} in ${{ matrix.consumer }}"
           for wf in .github/workflows/ai-comment.yml .github/workflows/issue-opened.yml .github/workflows/pr-review.yml; do
             [ -f "$wf" ] || continue
             if [ -n "$OLD_TAG" ]; then
@@ -121,7 +324,7 @@ jobs:
           EOF
 
       - name: Detect changes
-        if: steps.target.outputs.skip != 'true'
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true'
         id: changes
         working-directory: consumer
         run: |
@@ -131,8 +334,24 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve default branch
+        # Don't assume every consumer's default branch is `main`. Ask the API.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true'
+        id: base
+        env:
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          DEFAULT_BRANCH="$(gh api repos/lenaxia/${{ matrix.consumer }} --jq '.default_branch')"
+          echo "branch=${DEFAULT_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "Consumer ${{ matrix.consumer }} default branch: ${DEFAULT_BRANCH}"
+
       - name: Open sync PR
-        if: steps.target.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        # Cross-repo PRs require a PAT. GITHUB_TOKEN cannot open PRs in other
+        # repos even if they're public. When AI_WORKFLOWS_PAT is unset we skip
+        # with a visible warning rather than failing - the render/diff above
+        # still ran (for public consumers), so an operator can see what WOULD
+        # have been proposed.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode == 'pat'
         working-directory: consumer
         env:
           GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
@@ -154,16 +373,23 @@ jobs:
 
           Review the diff. Merge to accept; close to skip this version.
 
-          To roll back, revert this PR — both prompts and the pin revert together." \
-            --base main \
+          To roll back, revert this PR - both prompts and the pin revert together." \
+            --base "${{ steps.base.outputs.branch }}" \
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated sync to ai-workflows@${{ steps.ver.outputs.v }} (re-targeted existing PR)."
+
+      - name: Skip sync PR (no PAT)
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode != 'pat'
+        run: |
+          echo "::warning::Cannot open a cross-repo sync PR in ${{ matrix.consumer }} without AI_WORKFLOWS_PAT (GITHUB_TOKEN can't open PRs in other repos). The rendered/bumped changes were computed in the runner workspace (see the Render into consumer and Bump tag steps above) but were NOT pushed. Set AI_WORKFLOWS_PAT (a PAT with repo + workflow scope) and re-run this workflow to deliver v${{ steps.ver.outputs.v }} to ${{ matrix.consumer }}."
 
       - name: Update AI_WORKFLOWS_PIN variable (audit record)
         # The functional pin is the hardcoded @<tag> in the workflow files
         # (bumped above). This variable is kept as an audit/lookup record only
-        # — it is not read by any workflow's uses: ref.
-        if: steps.target.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        # - it is not read by any workflow's uses: ref.
+        # Skipped without PAT: setting a repo variable on another repo needs
+        # a PAT with admin scope, which GITHUB_TOKEN doesn't have cross-repo.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode == 'pat'
         env:
           GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
         run: |

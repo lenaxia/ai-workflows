@@ -499,6 +499,39 @@ that checkout, never committed) right after the nested checkout so the
 directory stays readable from disk but never enters the consumer's git index.
 See issue #17.
 
+### 9. `propagate.yml` degrades gracefully without `AI_WORKFLOWS_PAT`
+
+`propagate.yml` opens cross-repo sync PRs in every consumer on tag push. Two
+non-obvious things had been silently breaking it for three consecutive
+releases (v0.2.2 / v0.2.3 / v0.2.4):
+
+1. **Empty `AI_WORKFLOWS_PAT`.** Cross-repo operations (checkout of a private
+   consumer, opening any cross-repo PR) require a PAT with `repo` + `workflow`
+   scope, stored as `AI_WORKFLOWS_PAT`. When that secret is unset, the
+   literal `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to an empty
+   string, and `actions/checkout` fails with a generic
+   `Input required and not supplied: token` — which looks like a workflow
+   bug, not a missing secret. The fix routes the token through a
+   `Resolve auth token` step that falls back to `GITHUB_TOKEN` when the PAT
+   is empty. The fallback is enough for public-consumer checkout + render +
+   diff, so an operator can at least see what WOULD change. The cross-repo
+   PR step is gated on `steps.auth.outputs.mode == 'pat'`; when the PAT is
+   absent, a dedicated `Skip sync PR (no PAT)` step emits a `::warning::`
+   with the exact remediation (set the secret and re-run).
+
+2. **Dogfood pin drift.** `propagate.yml`'s consumer matrix handles OTHER
+   repos but historically did not bump THIS repo's own dogfood pins
+   (`self-pr-review.yml`, `self-ai-comment.yml`, `consumers/ai-workflows.yaml`).
+   They were stuck at v0.2.1 across v0.2.2 / v0.2.3 until PR #20 caught them
+   up manually. A new `dogfood-bump` job now bumps them on every tag push and
+   regenerates the rendered prompts (whose banner embeds the version), then
+   opens a self-PR for review. It runs entirely on the default `GITHUB_TOKEN`
+   (same-repo), so it works even when `AI_WORKFLOWS_PAT` is not set.
+
+The token-fallback, PAT-gated PR step, skip-step-with-warning, and
+dogfood-bump job are all locked by
+`tests/workflows/workflow_invariants_test.go::TestPropagate*`.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -510,6 +543,8 @@ See issue #17.
 | `Run OpenCode` fails: `could not read Username` on **issue-opened** | `issue-opened.yml` has `contents: read` — opencode's end-of-run push has no creds (and rarely, the AI also tries to push) | Expected; use `/implement` or `/fix` for code changes (see Lessons Learned #6) |
 | `Run OpenCode` fails: `could not read Username` on **pr-review** | Same end-of-run push failure, but the review itself was already posted via `gh pr review` | Already fixed in v0.2.4 — `Run OpenCode` has `continue-on-error: true` and the `Verify review submitted` step drives the job conclusion (see Lessons Learned #7). The bot comment opencode leaves on the PR ("`fatal: could not read Username...`") is cosmetic noise from opencode echoing the push failure as a comment and can be ignored. |
 | `fatal: No url found for submodule path '.ai-workflows' in .gitmodules` during cleanup | The pinned `.ai-workflows` checkout was swept into the consumer index as a gitlink by opencode's end-of-run `git add -A` | Already fixed in v0.2.4 — every reusable workflow writes `.ai-workflows/` to `.git/info/exclude` after the nested checkout (see Lessons Learned #8) |
+| `propagate.yml`: `Input required and not supplied: token` on `Checkout consumer` | `AI_WORKFLOWS_PAT` secret unset → `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to empty string → `actions/checkout` rejects it | Already fixed in v0.2.5 — token is resolved via a `Resolve auth token` step that falls back to `GITHUB_TOKEN` (see Lessons Learned #9). To enable cross-repo PRs, set `AI_WORKFLOWS_PAT` (PAT with `repo` + `workflow` scope) and re-run. |
+| `propagate.yml`: dogfood pins (`self-pr-review.yml`, `self-ai-comment.yml`, `consumers/ai-workflows.yaml`) drift across releases | Pre-v0.2.5, `propagate.yml`'s matrix handled OTHER repos but not this repo's own dogfood pins | Already fixed in v0.2.5 — a new `dogfood-bump` job bumps them on every tag push and opens a self-PR (see Lessons Learned #9) |
 | Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
 | `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |
 | AI job runs on GitHub-hosted runner instead of self-hosted | Caller didn't pass `runs_on` (defaults to `ubuntu-latest`) | Pass `runs_on: <your-label>` in the caller's `with:` |
