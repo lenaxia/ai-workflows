@@ -22,8 +22,10 @@
 package workflows
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -707,5 +709,91 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 	if !strings.Contains(bumpStep, "v[0-9]+") {
 		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept a vX.Y.Z tag pin.\n" +
 			"Consumers pinned by tag would not be discovered and the bump would no-op.")
+	}
+}
+
+// TestPropagateMatrixConsumersHaveConfigFiles asserts every consumer named
+// in the propagate matrix has a matching consumers/<name>.yaml config file.
+// ai-sync render looks up the config by the exact consumer name passed on
+// the CLI; a case mismatch (the matrix had "LLMSafeSpaces" but the file was
+// "llmsafespaces.yaml") makes render fail with "no such file or directory"
+// and turns that consumer's matrix job red. This test catches the mismatch
+// at test time instead of at release time.
+//
+// GitHub repo cloning is case-insensitive (lenaxia/llmsafespaces resolves
+// to LLMSafeSpaces), so the matrix entry should match the config-file
+// convention (lowercase), not the repo's display-case.
+func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+
+	// Extract the matrix consumer list from the `consumer: [...]` line.
+	// This is a deliberately narrow regex: the matrix in propagate.yml is a
+	// single-line list, and the consumer key appears exactly once.
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+	consumers := strings.Split(m[1], ",")
+	if len(consumers) == 0 {
+		t.Fatal("propagate.yml: matrix consumer list is empty")
+	}
+
+	for _, c := range consumers {
+		name := strings.TrimSpace(c)
+		if name == "" {
+			continue
+		}
+		cfgPath := filepath.Join(root, "consumers", name+".yaml")
+		if _, err := os.Stat(cfgPath); err != nil {
+			// Check if a case-shifted version exists (the original bug).
+			dir := filepath.Join(root, "consumers")
+			entries, _ := os.ReadDir(dir)
+			var lowercaseMatch string
+			for _, e := range entries {
+				if strings.EqualFold(e.Name(), name+".yaml") {
+					lowercaseMatch = e.Name()
+					break
+				}
+			}
+			hint := ""
+			if lowercaseMatch != "" {
+				hint = fmt.Sprintf(" A case-shifted file exists at consumers/%s — change the matrix entry to %q to match (GitHub repo cloning is case-insensitive, so the clone still works).",
+					lowercaseMatch, strings.ToLower(lowercaseMatch[:len(lowercaseMatch)-len(".yaml")]))
+			}
+			t.Errorf("propagate.yml: matrix consumer %q has no matching config file at consumers/%s.yaml.%s"+
+				" ai-sync render looks up the config by the exact consumer name; a case mismatch makes render fail.",
+				name, name, hint)
+		}
+	}
+}
+
+// TestPropagateDogfoodBumpHasWorkflowsPermission asserts the dogfood-bump
+// job declares `workflows: write` in its permissions. The job pushes
+// commits that modify .github/workflows/self-pr-review.yml and
+// self-ai-comment.yml (the dogfood pin sites); without workflows
+// permission, git push is rejected with "refusing to allow a GitHub App
+// to create or update workflow ... without `workflows` permission".
+//
+// The consumer-matrix `propagate` job does NOT need this permission: it
+// modifies workflow files in OTHER repos via AI_WORKFLOWS_PAT (which has
+// workflow scope), not via GITHUB_TOKEN. So the assertion is scoped to the
+// dogfood-bump job only.
+func TestPropagateDogfoodBumpHasWorkflowsPermission(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+	jobBlock := extractJobBlock(body, "dogfood-bump")
+	if jobBlock == "" {
+		t.Fatal("propagate.yml: no 'dogfood-bump' job found - workflow structure changed; update this test")
+	}
+	// The permissions block is a YAML mapping under the job. We assert the
+	// `workflows: write` key appears in the job body. A substring check is
+	// sufficient and matches the style of the other invariant tests.
+	if !strings.Contains(jobBlock, "workflows: write") {
+		t.Errorf("propagate.yml: 'dogfood-bump' job is missing `workflows: write` in its permissions.\n" +
+			"The job pushes commits that modify .github/workflows/self-*.yml; without workflows permission, " +
+			"git push is rejected with 'refusing to allow a GitHub App to create or update workflow ... " +
+			"without workflows permission'. This is the exact failure that blocked the v0.2.5 dogfood-bump " +
+			"run (job 91720974727).")
 	}
 }
