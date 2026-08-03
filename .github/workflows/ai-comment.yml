@@ -84,6 +84,15 @@ jobs:
           path: .ai-workflows
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Keep ai-workflows out of consumer git index
+        # See pr-review.yml for the full rationale. In short: this nested
+        # checkout carries its own .git, opencode's end-of-run `git add -A`
+        # would otherwise sweep it into the consumer index as a gitlink, and
+        # actions/checkout's post-job cleanup would emit `fatal: No url
+        # found for submodule path '.ai-workflows' in .gitmodules`. The
+        # exclude is local to this checkout (never committed). See issue #17.
+        run: printf '.ai-workflows/\n' >> .git/info/exclude
+
       - name: Configure git identity
         # Self-hosted ubuntu runners in this org don't ship a default git
         # user.name/user.email, so `git commit` from the OpenCode step fails
