@@ -18,3 +18,13 @@ Thumbs.db
 
 # Go
 /vendor/
+
+# Pinned ai-workflows checkout, created inside the worktree by every
+# reusable workflow's "Checkout ai-workflows (pinned)" step
+# (.github/workflows/{pr-review,ai-comment,issue-opened}.yml). The nested
+# checkout carries its own .git; without this ignore (and the matching
+# .git/info/exclude write in each reusable workflow), opencode's end-of-run
+# `git add -A` would sweep it into the index as a gitlink and break the
+# next `actions/checkout` with `fatal: No url found for submodule path
+# '.ai-workflows' in .gitmodules`. See issue #17 Bug B.
+/.ai-workflows/
