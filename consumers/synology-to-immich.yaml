@@ -1,0 +1,40 @@
+# Consumer config for lenaxia/synology-to-immich.
+#
+# synology-to-immich is a Python toolkit for migrating photos, videos, and
+# face tags from Synology Photos to Immich (SHA-1 bridge, streaming uploads,
+# IoU face matching). It uses ai-workflows for workflow plumbing only
+# (reusable workflows, route-command.sh, post-footer.sh, formal-blocking-
+# review directive).
+#
+# All prompts are migration-specific (PostgreSQL, Immich REST API, NFS,
+# SHA-1 checksum matching, requests-toolbelt streaming) and are wrong for
+# the gokore-derived shared templates. Every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: synology-to-immich
+version: v0.2.0
+
+vars:
+  project_name: synology-to-immich
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []

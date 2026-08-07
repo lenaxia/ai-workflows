@@ -559,3 +559,4 @@ dogfood-bump job are all locked by
 | TinyRSVP | Active | Plumbing-only consumer; all prompts forked (RSVP-specific, not gokore-derived) |
 | containers | Active | Plumbing-only consumer; all prompts forked (container image builds, not gokore-derived) |
 | talos-ops-prod | Active | Plumbing-only consumer; all prompts forked (Talos/Flux GitOps, SOPS, not gokore-derived) |
+| synology-to-immich | Active | Plumbing-only consumer; all prompts forked (Synology Photos → Immich migration, PostgreSQL, NFS, not gokore-derived) |
