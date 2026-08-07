@@ -1,0 +1,40 @@
+# Consumer config for lenaxia/ha-custom-components.
+#
+# ha-custom-components is a collection of Home Assistant custom integrations
+# (hp_climate climate bridge, future zone/floor-register/espresence bridges).
+# It uses ai-workflows for workflow PLUMBING only (reusable workflows,
+# route-command.sh, post-footer.sh, formal-blocking-review directive).
+#
+# All prompts are HA-specific (Python HA core APIs, manifest.json schema,
+# hacs.json conventions, async entity patterns, ConfigFlow vs platform legacy).
+# The shared templates are goKore-derived and are wrong for this repo — so
+# every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: ha-custom-components
+version: v0.2.0
+
+vars:
+  project_name: ha-custom-components
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
