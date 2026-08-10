@@ -1,0 +1,47 @@
+# Consumer config for lenaxia/AI-or-Not.
+#
+# AI-or-Not is a Next.js 16 (TypeScript, App Router) game where players guess
+# which of two photos are AI-generated. Images are served through an opaque
+# server proxy (HMAC-derived IDs + signed round tokens) so the source folder
+# never reaches the browser. Backend uses Drizzle ORM + libsql (SQLite/Turso).
+#
+# It uses ai-workflows for workflow PLUMBING only (reusable workflows,
+# route-command.sh, post-footer.sh, formal-blocking-review directive).
+#
+# All prompts are AI-or-Not-specific (Next.js 16 Route Handlers, React 19
+# Server/Client Components, Drizzle ORM, shadcn/ui, image-proxy OPSEC, HMAC
+# token signing). The shared templates are goKore-derived and are wrong for
+# this repo - so every prompt is forked.
+#
+# The repo name is mixed-case (AI-or-Not); GitHub clone URLs are case-
+# insensitive so propagate.yml's `lenaxia/${{ matrix.consumer }}` resolves
+# correctly with the lowercase matrix entry `ai-or-not`.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: ai-or-not
+version: v0.2.7
+
+vars:
+  project_name: AI-or-Not
+  rules_doc: README.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
