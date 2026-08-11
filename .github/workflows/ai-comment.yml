@@ -132,6 +132,11 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Workaround for anomalyco/opencode v1.2.9 assertPermissions() —
+          # see pr-review.yml for the full rationale. Without TOKEN set, any
+          # bot-authored trigger (a /command from a bot, or a comment on a
+          # bot-authored PR) fails with `permission: none`.
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: openai-compatible/default
           use_github_token: "true"
