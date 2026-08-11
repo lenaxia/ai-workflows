@@ -136,17 +136,6 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Workaround for anomalyco/opencode v1.2.9: assertPermissions() skips
-          # the collaborator-permission check only when useEnvGithubToken()
-          # returns truthy, and that function reads process.env.TOKEN (not
-          # USE_GITHUB_TOKEN as the action input maps to). Without TOKEN set,
-          # every bot-authored PR (release-please, dependabot, renovate-when-
-          # not-skipped-at-caller) fails with `permission: none` because bots
-          # have no collaborator permission level. Mirror GITHUB_TOKEN into
-          # TOKEN so the skip path fires and assertPermissions returns early.
-          # Drop this once upstream fixes useEnvGithubToken to read
-          # USE_GITHUB_TOKEN (or the action is bumped past the bug).
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: openai-compatible/default
           use_github_token: "true"

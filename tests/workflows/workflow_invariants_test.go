@@ -894,44 +894,8 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 			"the push is skipped and this step emits a ::warning:: with the remediation.")
 	}
 }
+<<<<<<< HEAD
 
-// TestReusableWorkflowsSetTokenEnvForOpenCode locks the workaround for
-// anomalyco/opencode v1.2.9's assertPermissions() bug.
-//
-// useEnvGithubToken() reads process.env.TOKEN, NOT USE_GITHUB_TOKEN (which
-// the action input `use_github_token` maps to). Without TOKEN set,
-// assertPermissions() does not skip the collaborator-permission check, and
-// every bot-authored PR (release-please, dependabot, renovate-when-not-
-// skipped-at-caller) fails with `permission: none`. This guard locks the
-// workaround consistently across all three reusable workflows so a future
-// edit to one file cannot silently drop it.
-//
-// Drop this test together with the TOKEN env line in all three files when
-// the opencode pin is bumped past the bug (upstream fix: useEnvGithubToken
-// reads USE_GITHUB_TOKEN, or the action's assertPermissions is reworked).
-func TestReusableWorkflowsSetTokenEnvForOpenCode(t *testing.T) {
-	root := invRoot(t)
-	for _, wf := range []string{"pr-review.yml", "ai-comment.yml", "issue-opened.yml"} {
-		body := readWorkflowFile(t, root, wf)
-		runStep := stepBlock(body, "Run OpenCode")
-		if runStep == "" {
-			t.Fatalf("%s: no 'Run OpenCode' step found — workflow structure changed; update this test", wf)
-		}
-		// Only enforce when the step opts into the github-token path.
-		// (All three currently do, but guard against future workflows
-		// that legitimately use the opencode-app OIDC path instead.)
-		if !strings.Contains(runStep, `use_github_token: "true"`) {
-			continue
-		}
-		if !strings.Contains(runStep, "TOKEN: ${{ secrets.GITHUB_TOKEN }}") {
-			t.Errorf("%s: 'Run OpenCode' sets use_github_token: \"true\" but does not set TOKEN env.\n"+
-				"anomalyco/opencode v1.2.9 useEnvGithubToken() reads process.env.TOKEN, not USE_GITHUB_TOKEN "+
-				"(which the action input maps to). Without TOKEN set, assertPermissions() does not skip and "+
-				"every bot-authored PR fails with `permission: none`. Mirror GITHUB_TOKEN into TOKEN. "+
-				"Remove this assertion together with the TOKEN env line when the opencode pin is bumped past the bug.", wf)
-		}
-	}
-}
 
 // TestPrReviewSkipsAutomationBots locks the caller-side skip filter for
 // automation-bot PR authors in pr-review.yml's review job.
@@ -974,3 +938,5 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 		t.Errorf("pr-review.yml: expected `contains(fromJson([...]), github.event.pull_request.user.login)` filter on the review job — not found.")
 	}
 }
+=======
+>>>>>>> parent of 3c70a28 (fix(workflows): bypass opencode v1.2.9 permission check via TOKEN env (#28))
