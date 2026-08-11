@@ -163,7 +163,11 @@ permissions:
 
 jobs:
   review:
-    if: github.event.pull_request.user.login != 'renovate[bot]'
+    # No `if:` filter needed for the common automation bots — the reusable
+    # workflow at @v0.2.9+ skips renovate[bot], github-actions[bot],
+    # release-please[bot], dependabot[bot], mergify[bot], and
+    # github-merge-queue[bot] at the job level. Add your own `if:` only
+    # if you want to filter additional actors.
     uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.0
     secrets: inherit
     with:

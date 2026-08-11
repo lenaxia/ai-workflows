@@ -932,3 +932,45 @@ func TestReusableWorkflowsSetTokenEnvForOpenCode(t *testing.T) {
 		}
 	}
 }
+
+// TestPrReviewSkipsAutomationBots locks the caller-side skip filter for
+// automation-bot PR authors in pr-review.yml's review job.
+//
+// The opencode CLI's assertPermissions() runs a collaborator-permission
+// check that returns 'none' for bot accounts (they are not collaborators),
+// causing every bot-authored PR to fail the workflow before the AI can
+// run. Filtering bot authors at the reusable-workflow level means every
+// consumer gets the fix automatically without per-caller config.
+//
+// If the opencode CLI ever adds a skip path for use_github_token: true
+// (the legacy github/index.ts wrapper has one; the current CLI handler
+// does not), this filter can be relaxed — but the test stays as a
+// regression guard against accidentally removing the filter and breaking
+// bot-authored PRs across the consumer fleet again.
+func TestPrReviewSkipsAutomationBots(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "pr-review.yml")
+	reviewJob := stepBlock(body, "Checkout consumer repository")
+	if reviewJob == "" {
+		t.Fatalf("pr-review.yml: 'Checkout consumer repository' step not found — workflow structure changed; update this test")
+	}
+	// The `if:` filter lives on the job, just above the steps. stepBlock
+	// captures from the `- name:` line through the next blank-line-double-
+	// newline, so we look at the whole file for the contains() guard.
+	requiredBots := []string{
+		`"renovate[bot]"`,
+		`"github-actions[bot]"`,
+		`"release-please[bot]"`,
+		`"dependabot[bot]"`,
+	}
+	for _, bot := range requiredBots {
+		if !strings.Contains(body, bot) {
+			t.Errorf("pr-review.yml: missing bot filter for %s.\n"+
+				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
+				"Add %s to the job-level `if:` filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
+		}
+	}
+	if !strings.Contains(body, "contains(fromJson(") {
+		t.Errorf("pr-review.yml: expected `contains(fromJson([...]), github.event.pull_request.user.login)` filter on the review job — not found.")
+	}
+}

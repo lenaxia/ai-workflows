@@ -47,6 +47,17 @@ on:
 jobs:
   review:
     runs-on: ${{ inputs.runs_on }}
+    # Skip automation-bot PRs. Reason: the opencode CLI's assertPermissions()
+    # runs a collaborator-permission check that returns 'none' for bot
+    # accounts (they are not collaborators), causing the workflow to fail
+    # before the AI can review. Bot PRs are typically auto-generated
+    # (release-please version bumps, dependabot dependency updates) and
+    # either trivial or out-of-scope for code review. To review a specific
+    # bot PR, the maintainer can dispatch the workflow manually.
+    #
+    # To extend this list for your org's other bots, copy this `if:` block
+    # into your caller workflow's job and add the bot username.
+    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) }}
     concurrency:
       group: ai-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
