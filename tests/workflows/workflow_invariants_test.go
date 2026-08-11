@@ -894,7 +894,6 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 			"the push is skipped and this step emits a ::warning:: with the remediation.")
 	}
 }
-<<<<<<< HEAD
 
 
 // TestPrReviewSkipsAutomationBots locks the caller-side skip filter for
@@ -906,37 +905,49 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 // run. Filtering bot authors at the reusable-workflow level means every
 // consumer gets the fix automatically without per-caller config.
 //
-// If the opencode CLI ever adds a skip path for use_github_token: true
-// (the legacy github/index.ts wrapper has one; the current CLI handler
-// does not), this filter can be relaxed — but the test stays as a
-// regression guard against accidentally removing the filter and breaking
-// bot-authored PRs across the consumer fleet again.
+// PR #28 attempted a TOKEN env workaround based on the legacy
+// github/index.ts wrapper, but that code path does not run when invoked
+// via `opencode github run` (the CLI handler at
+// packages/opencode/src/cli/cmd/github.handler.ts has its own
+// assertPermissions with no skip path). PR #28 was reverted as dead code;
+// this filter is the real fix.
+//
+// If the opencode CLI ever adds its own skip for use_github_token: true,
+// this filter can be relaxed — but the test stays as a regression guard
+// against accidentally removing the filter and breaking bot-authored PRs
+// across the consumer fleet again.
 func TestPrReviewSkipsAutomationBots(t *testing.T) {
 	root := invRoot(t)
 	body := readWorkflowFile(t, root, "pr-review.yml")
-	reviewJob := stepBlock(body, "Checkout consumer repository")
-	if reviewJob == "" {
-		t.Fatalf("pr-review.yml: 'Checkout consumer repository' step not found — workflow structure changed; update this test")
+
+	// Locate the `if:` filter block on the review job. Anchor to the
+	// contains(fromJson( line specifically — a bot name appearing only in
+	// a comment would satisfy a naive strings.Contains on the whole file.
+	ifLine := ""
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "contains(fromJson(") {
+			ifLine = line
+			break
+		}
 	}
-	// The `if:` filter lives on the job, just above the steps. stepBlock
-	// captures from the `- name:` line through the next blank-line-double-
-	// newline, so we look at the whole file for the contains() guard.
+	if ifLine == "" {
+		t.Fatalf("pr-review.yml: no `contains(fromJson(...))` filter found on the review job — the bot-skip filter was removed. Restore it or update this test if the filter has been intentionally replaced.")
+	}
+
+	// Every bot in the canonical list must appear on the filter line itself.
 	requiredBots := []string{
 		`"renovate[bot]"`,
 		`"github-actions[bot]"`,
 		`"release-please[bot]"`,
 		`"dependabot[bot]"`,
+		`"mergify[bot]"`,
+		`"github-merge-queue[bot]"`,
 	}
 	for _, bot := range requiredBots {
-		if !strings.Contains(body, bot) {
-			t.Errorf("pr-review.yml: missing bot filter for %s.\n"+
+		if !strings.Contains(ifLine, bot) {
+			t.Errorf("pr-review.yml: bot filter is missing %s on the `if:` line.\n"+
 				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
-				"Add %s to the job-level `if:` filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
+				"Add %s to the contains(fromJson([...])) filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
 		}
 	}
-	if !strings.Contains(body, "contains(fromJson(") {
-		t.Errorf("pr-review.yml: expected `contains(fromJson([...]), github.event.pull_request.user.login)` filter on the review job — not found.")
-	}
 }
-=======
->>>>>>> parent of 3c70a28 (fix(workflows): bypass opencode v1.2.9 permission check via TOKEN env (#28))

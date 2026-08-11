@@ -12,7 +12,6 @@
 #     pull-requests: write
 #   jobs:
 #     review:
-#       if: github.event.pull_request.user.login != 'renovate[bot]'
 #       uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.0
 #       secrets: inherit
 #       with:
@@ -21,7 +20,10 @@
 #         runs_on: ubuntu-latest    # optional; self-hosted consumers pass their label
 #
 # The `uses:` ref MUST be a hardcoded tag (no vars context — see README
-# Lessons Learned #1). The `if:` filter stays in the caller (see #4).
+# Lessons Learned #1). The reusable workflow at v0.2.9+ skips automation
+# bots (renovate, github-actions, release-please, dependabot, mergify,
+# github-merge-queue) at the job level, so callers do NOT need to add
+# their own `if:` filter for those — add one only for custom bots.
 # `runs_on` defaults to ubuntu-latest; self-hosted consumers (e.g. gokore)
 # pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
 

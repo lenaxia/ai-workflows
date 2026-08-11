@@ -168,10 +168,10 @@ jobs:
     # release-please[bot], dependabot[bot], mergify[bot], and
     # github-merge-queue[bot] at the job level. Add your own `if:` only
     # if you want to filter additional actors.
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.0
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.9
     secrets: inherit
     with:
-      version: v0.2.0
+      version: v0.2.9
       project_name: myrepo
 ```
 
