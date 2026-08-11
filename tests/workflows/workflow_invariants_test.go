@@ -895,40 +895,59 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 	}
 }
 
-// TestReusableWorkflowsSetTokenEnvForOpenCode locks the workaround for
-// anomalyco/opencode v1.2.9's assertPermissions() bug.
+
+// TestPrReviewSkipsAutomationBots locks the caller-side skip filter for
+// automation-bot PR authors in pr-review.yml's review job.
 //
-// useEnvGithubToken() reads process.env.TOKEN, NOT USE_GITHUB_TOKEN (which
-// the action input `use_github_token` maps to). Without TOKEN set,
-// assertPermissions() does not skip the collaborator-permission check, and
-// every bot-authored PR (release-please, dependabot, renovate-when-not-
-// skipped-at-caller) fails with `permission: none`. This guard locks the
-// workaround consistently across all three reusable workflows so a future
-// edit to one file cannot silently drop it.
+// The opencode CLI's assertPermissions() runs a collaborator-permission
+// check that returns 'none' for bot accounts (they are not collaborators),
+// causing every bot-authored PR to fail the workflow before the AI can
+// run. Filtering bot authors at the reusable-workflow level means every
+// consumer gets the fix automatically without per-caller config.
 //
-// Drop this test together with the TOKEN env line in all three files when
-// the opencode pin is bumped past the bug (upstream fix: useEnvGithubToken
-// reads USE_GITHUB_TOKEN, or the action's assertPermissions is reworked).
-func TestReusableWorkflowsSetTokenEnvForOpenCode(t *testing.T) {
+// PR #28 attempted a TOKEN env workaround based on the legacy
+// github/index.ts wrapper, but that code path does not run when invoked
+// via `opencode github run` (the CLI handler at
+// packages/opencode/src/cli/cmd/github.handler.ts has its own
+// assertPermissions with no skip path). PR #28 was reverted as dead code;
+// this filter is the real fix.
+//
+// If the opencode CLI ever adds its own skip for use_github_token: true,
+// this filter can be relaxed — but the test stays as a regression guard
+// against accidentally removing the filter and breaking bot-authored PRs
+// across the consumer fleet again.
+func TestPrReviewSkipsAutomationBots(t *testing.T) {
 	root := invRoot(t)
-	for _, wf := range []string{"pr-review.yml", "ai-comment.yml", "issue-opened.yml"} {
-		body := readWorkflowFile(t, root, wf)
-		runStep := stepBlock(body, "Run OpenCode")
-		if runStep == "" {
-			t.Fatalf("%s: no 'Run OpenCode' step found — workflow structure changed; update this test", wf)
+	body := readWorkflowFile(t, root, "pr-review.yml")
+
+	// Locate the `if:` filter block on the review job. Anchor to the
+	// contains(fromJson( line specifically — a bot name appearing only in
+	// a comment would satisfy a naive strings.Contains on the whole file.
+	ifLine := ""
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "contains(fromJson(") {
+			ifLine = line
+			break
 		}
-		// Only enforce when the step opts into the github-token path.
-		// (All three currently do, but guard against future workflows
-		// that legitimately use the opencode-app OIDC path instead.)
-		if !strings.Contains(runStep, `use_github_token: "true"`) {
-			continue
-		}
-		if !strings.Contains(runStep, "TOKEN: ${{ secrets.GITHUB_TOKEN }}") {
-			t.Errorf("%s: 'Run OpenCode' sets use_github_token: \"true\" but does not set TOKEN env.\n"+
-				"anomalyco/opencode v1.2.9 useEnvGithubToken() reads process.env.TOKEN, not USE_GITHUB_TOKEN "+
-				"(which the action input maps to). Without TOKEN set, assertPermissions() does not skip and "+
-				"every bot-authored PR fails with `permission: none`. Mirror GITHUB_TOKEN into TOKEN. "+
-				"Remove this assertion together with the TOKEN env line when the opencode pin is bumped past the bug.", wf)
+	}
+	if ifLine == "" {
+		t.Fatalf("pr-review.yml: no `contains(fromJson(...))` filter found on the review job — the bot-skip filter was removed. Restore it or update this test if the filter has been intentionally replaced.")
+	}
+
+	// Every bot in the canonical list must appear on the filter line itself.
+	requiredBots := []string{
+		`"renovate[bot]"`,
+		`"github-actions[bot]"`,
+		`"release-please[bot]"`,
+		`"dependabot[bot]"`,
+		`"mergify[bot]"`,
+		`"github-merge-queue[bot]"`,
+	}
+	for _, bot := range requiredBots {
+		if !strings.Contains(ifLine, bot) {
+			t.Errorf("pr-review.yml: bot filter is missing %s on the `if:` line.\n"+
+				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
+				"Add %s to the contains(fromJson([...])) filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
 		}
 	}
 }

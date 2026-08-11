@@ -105,11 +105,6 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Workaround for anomalyco/opencode v1.2.9 assertPermissions() —
-          # see pr-review.yml for the full rationale. issue-opened is read-only
-          # so the permission check rarely matters, but keep the workaround
-          # consistent across the three callers.
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           model: openai-compatible/default
           use_github_token: "true"
