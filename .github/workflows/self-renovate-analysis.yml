@@ -1,0 +1,46 @@
+# Renovate PR Analysis (self / dogfood) — runs this repo's own reusable
+# renovate-analysis workflow on ai-workflows' own Renovate PRs.
+#
+# Why a separate file: the reusable workflow definition already occupies
+# .github/workflows/renovate-analysis.yml (on: workflow_call). A caller needs
+# a distinct filename. The `self-` prefix signals self-consumption, matching
+# self-pr-review.yml / self-ai-comment.yml.
+#
+# This is the live validation layer for the reusable renovate-analysis
+# workflow: every 2 hours it runs the real AI analysis at the pinned tag
+# against this repo's open Renovate PRs, exercising target resolution, prompt
+# assembly, the LLM call, comment posting/verification, and safe auto-merges —
+# none of which `go test` covers. Consumers mirror this file (minus the
+# `self-` prefix and with their own triggers/permissions) as described in the
+# reusable workflow's header.
+#
+# Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
+# OPENAI_MODEL (inherited via secrets: inherit).
+
+name: Renovate PR Analysis (self)
+
+on:
+  schedule:
+    # Every 2 hours — picks up newly-opened Renovate PRs and re-analyzes any
+    # that have been updated since the last analysis comment.
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to analyze (leave empty for all open Renovate PRs)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  analyze-prs:
+    uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.9
+    secrets: inherit
+    with:
+      project_name: ai-workflows
+      pr_number: ${{ inputs.pr_number }}

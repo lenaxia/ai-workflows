@@ -109,8 +109,8 @@ jobs:
         run: go build -o /tmp/ai-sync ./scripts/ai-sync
 
       - name: Bump dogfood pins
-        # Bump all v0.x.x tokens in the three dogfood pin sites to the new
-        # version. tests/workflows/pin_consistency_test.go::TestDogfoodPinsAreConsistent
+        # Bump all v0.x.x tokens in the dogfood pin sites to the new version.
+        # tests/workflows/pin_consistency_test.go::TestDogfoodPinsAreConsistent
         # guards that these stay in lockstep, so a partial bump fails CI.
         run: |
           set -euo pipefail
@@ -118,7 +118,8 @@ jobs:
           for f in \
             consumers/ai-workflows.yaml \
             .github/workflows/self-pr-review.yml \
-            .github/workflows/self-ai-comment.yml; do
+            .github/workflows/self-ai-comment.yml \
+            .github/workflows/self-renovate-analysis.yml; do
             # Replace every vX.Y.Z token in the file with the new tag. These
             # files contain only version tokens for THIS repo's dogfood pin
             # (no unrelated vX.Y.Z strings), so a global replace is safe.
@@ -194,6 +195,7 @@ jobs:
           - \`consumers/ai-workflows.yaml\`
           - \`.github/workflows/self-pr-review.yml\`
           - \`.github/workflows/self-ai-comment.yml\`
+          - \`.github/workflows/self-renovate-analysis.yml\`
 
           Regenerates the ai-sync-rendered prompt banners so \`TestRenderedPromptsMatchTemplates\` stays green.
 
@@ -346,14 +348,14 @@ jobs:
           set -euo pipefail
           NEW_TAG="${{ steps.ver.outputs.v }}"
           OLD_TAG=""
-          for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml; do
+          for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml .github/workflows/renovate-analysis.yml; do
             [ -f "$wf" ] || continue
             # Match either a SHA pin (40 hex) or a vX.Y.Z tag pin after '@'.
             OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/\w+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
             [ -n "$OLD_TAG" ] && break
           done
           echo "Bumping ${OLD_TAG:-<none>} -> ${NEW_TAG} in ${{ matrix.consumer }}"
-          for wf in .github/workflows/ai-comment.yml .github/workflows/issue-opened.yml .github/workflows/pr-review.yml; do
+          for wf in .github/workflows/ai-comment.yml .github/workflows/issue-opened.yml .github/workflows/pr-review.yml .github/workflows/renovate-analysis.yml; do
             [ -f "$wf" ] || continue
             if [ -n "$OLD_TAG" ]; then
               sed -i "s|@${OLD_TAG}|@${NEW_TAG}|g" "$wf"
@@ -412,7 +414,7 @@ jobs:
 
           This PR includes:
           - Rendered prompt files (if any templates changed)
-          - Bumped \`@<tag>\` and \`version:\` in the three AI workflow files
+          - Bumped \`@<tag>\` and \`version:\` in the AI workflow files
 
           Review the diff. Merge to accept; close to skip this version.
 

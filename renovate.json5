@@ -1,0 +1,72 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:recommended',
+    ':disableRateLimiting',
+    ':dependencyDashboard',
+    ':semanticCommits',
+  ],
+  dependencyDashboard: true,
+  dependencyDashboardTitle: 'Renovate Dashboard 🤖',
+  suppressNotifications: [
+    'prEditedNotification',
+    'prIgnoreNotification',
+  ],
+  rebaseWhen: 'conflicted',
+  packageRules: [
+    {
+      description: ['Auto merge GitHub Actions digest/patch/minor updates'],
+      matchManagers: ['github-actions'],
+      automerge: true,
+      automergeType: 'branch',
+      ignoreTests: true,
+      matchUpdateTypes: ['digest', 'patch', 'minor'],
+    },
+    {
+      // The opencode action is the AI runtime for every workflow in this
+      // repo; its versions change permission semantics (e.g. the
+      // assertPermissions model differs across lines — see issue history).
+      // Never auto-merge it; the renovate-analysis workflow reviews it.
+      description: ['Never auto-merge anomalyco/opencode updates'],
+      matchPackageNames: ['anomalyco/opencode'],
+      automerge: false,
+    },
+    {
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['major'],
+      commitMessagePrefix: 'feat(github-action)!: ',
+    },
+    {
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['minor'],
+      semanticCommitType: 'feat',
+      semanticCommitScope: 'github-action',
+    },
+    {
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['patch'],
+      semanticCommitType: 'fix',
+      semanticCommitScope: 'github-action',
+    },
+    {
+      matchUpdateTypes: ['major'],
+      labels: ['type/major'],
+    },
+    {
+      matchUpdateTypes: ['minor'],
+      labels: ['type/minor'],
+    },
+    {
+      matchUpdateTypes: ['patch'],
+      labels: ['type/patch'],
+    },
+    {
+      matchManagers: ['github-actions'],
+      addLabels: ['renovate/github-action'],
+    },
+    {
+      matchManagers: ['gomod'],
+      addLabels: ['renovate/go'],
+    },
+  ],
+}
