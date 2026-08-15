@@ -1,4 +1,4 @@
-<!-- Managed by lenaxia/ai-workflows@v0.2.9 — do not edit. Override via consumers/<repo>.yaml. -->
+<!-- Managed by lenaxia/ai-workflows@v0.2.10 — do not edit. Override via consumers/<repo>.yaml. -->
 ## AI Assistant Commands
 
 The following commands are available on this issue/PR thread. Reply with one to trigger the assistant — any text after a command tunes the request (e.g. `/review focus on the handler registration`).

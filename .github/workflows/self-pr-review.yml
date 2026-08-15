@@ -28,8 +28,8 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.user.login != 'renovate[bot]'
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.9
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.10
     secrets: inherit
     with:
-      version: v0.2.9
+      version: v0.2.10
       project_name: ai-workflows
