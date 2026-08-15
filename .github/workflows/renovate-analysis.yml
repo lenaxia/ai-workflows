@@ -1,0 +1,172 @@
+# Renovate PR Analysis (reusable) — scheduled/manual batch analysis of
+# Renovate PRs by the AI, with per-PR analysis comments and safe auto-merges.
+#
+# Caller contract (consumer's .github/workflows/renovate-analysis.yml):
+#
+#   name: Renovate PR Analysis
+#   on:
+#     schedule:
+#       - cron: "0 */2 * * *"
+#     workflow_dispatch:
+#       inputs:
+#         pr_number:
+#           description: "PR number to analyze (empty = all open Renovate PRs)"
+#           required: false
+#           type: string
+#   permissions:                          # REQUIRED — the agent posts comments
+#     id-token: write                     # and may merge; see README Lessons Learned #2
+#     contents: write
+#     issues: write
+#     pull-requests: write
+#   jobs:
+#     analyze-prs:
+#       uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.10
+#       secrets: inherit
+#       with:
+#         project_name: myrepo
+#         pr_number: ${{ inputs.pr_number || '' }}   # optional
+#         runs_on: ubuntu-latest                     # optional; self-hosted consumers pass their label
+#
+# The `uses:` ref MUST be a hardcoded tag (no vars context — see README
+# Lessons Learned #1). propagate.yml carries the tag bump forward in the
+# consumer's caller file on every release. Note: unlike the other reusable
+# workflows this one takes NO `version` input — it performs no nested
+# ai-workflows checkout (the opencode action needs nothing from this repo;
+# the prompt comes from the consumer's own .github/prompts/), so the tag in
+# the `uses:` ref IS the version.
+#
+# Why schedule/workflow_dispatch and NOT pull_request? The opencode action's
+# assertPermissions() requires the event actor (for pull_request events: the
+# PR author) to be a repo collaborator with write permission. renovate[bot]
+# is an app bot account and can never be a collaborator, so every
+# pull_request-triggered run fails with "User renovate[bot] does not have
+# write permissions" before the AI can analyze. schedule/workflow_dispatch
+# are repo events — no actor — so the permission assertion is skipped
+# entirely, regardless of the action line. This mirrors the working
+# renovate-analysis.yml in lenaxia/k8s-mechanic and lenaxia/talos-ops-prod.
+#
+# The reusable workflow reads the CONSUMER's own rendered prompt at
+# .github/prompts/renovate-analysis.md (rendered by propagate, or forked and
+# edited by the consumer) — the same contract as the other reusable
+# workflows. A consumer that wants repo-specific exclusions edits its forked
+# copy; the analysis methodology itself lives in the template.
+#
+# No job-level `if:` bot filter is needed: this workflow never runs on
+# pull_request events (there is no actor to skip). Consumers that want a
+# different cadence or an explicit-PR dispatch only need the two triggers
+# above.
+name: Renovate PR Analysis (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project_name:
+        description: "Consumer project name (injected into prompt context)"
+        type: string
+        required: true
+      pr_number:
+        description: "Renovate PR number to analyze (empty = analyze all open Renovate PRs)"
+        type: string
+        required: false
+        default: ""
+      runs_on:
+        description: "Runner label(s) for the job (default ubuntu-latest). Self-hosted consumers pass their own label."
+        type: string
+        required: false
+        default: ubuntu-latest
+
+jobs:
+  analyze-prs:
+    runs-on: ${{ inputs.runs_on }}
+    concurrency:
+      # Keyed on the explicit PR number when one is dispatched, else the
+      # branch ref (schedule runs) — a targeted dispatch is not cancelled
+      # by an overlapping scheduled run and vice versa.
+      group: renovate-analysis-${{ inputs.pr_number || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      id-token: write
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          # persist-credentials: false — this workflow only ANALYZES and
+          # comments; the agent is instructed to write scratch files under
+          # /tmp only, never into the worktree (matching the working
+          # k8s-mechanic setup). Consumers that need the agent to push code
+          # use ai-comment.yml instead.
+          persist-credentials: false
+
+      - name: Resolve target PRs
+        id: targets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            echo "prs=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "Explicit target: PR #${{ inputs.pr_number }} (workflow_dispatch input)"
+          else
+            prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --author "renovate[bot]" --state open --json number --jq '[.[].number] | join(",")')"
+            if [ -n "${prs}" ]; then
+              echo "prs=${prs}" >> "$GITHUB_OUTPUT"
+              echo "Open Renovate PRs: ${prs}"
+            else
+              echo "prs=" >> "$GITHUB_OUTPUT"
+              echo "No open Renovate PRs — the run will report that instead of analyzing."
+            fi
+          fi
+
+      - name: Build prompt
+        env:
+          TARGETS: ${{ steps.targets.outputs.prs }}
+        run: |
+          set -euo pipefail
+          {
+            # GITHUB_ENV multiline values are stored verbatim (no shell
+            # expansion), so consumer-forked prompt content (which may
+            # contain `$`, backticks, etc.) lands in the prompt untouched.
+            # The dynamic values are appended via explicit printf lines
+            # below; the closing marker must match the header line exactly.
+            echo "OPENCODE_PROMPT<<__PROMPT_EOF__"
+            cat .github/prompts/context.md
+            printf '\n\n---\n\n'
+            cat .github/prompts/core-rules.md
+            printf '\n\n---\n\n'
+            cat .github/prompts/renovate-analysis.md
+            printf '\n\n**Repository under analysis:** `%s`\n' "${{ inputs.project_name }}"
+            if [ -n "${TARGETS}" ]; then
+              printf '**Targets for this run:** Renovate PRs %s (the list from `gh pr list --repo %s --author renovate[bot] --state open` may add more — iterate EVERY one).\n' "#${TARGETS}" "${GITHUB_REPOSITORY}"
+            else
+              printf '**Targets for this run:** none — no open Renovate PRs were found at resolve time. Verify with `gh pr list --repo %s --author "renovate[bot]" --state open`; if still empty, DO NOT post any comment (there is no PR to comment on) — report it in your final summary and stop.\n' "${GITHUB_REPOSITORY}"
+            fi
+            echo "__PROMPT_EOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Run OpenCode
+        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Use the openai-compatible provider declared in /opencode.json
+          # (custom OPENAI_API_BASE). The model id is `default` which resolves
+          # to {env:OPENAI_MODEL} at runtime via the config file.
+          model: openai-compatible/default
+          use_github_token: "true"
+          share: "false"
+          prompt: ${{ env.OPENCODE_PROMPT }}
+        # NO continue-on-error here, deliberately: unlike pr-review.yml there
+        # is no separate verify step (no single deliverable to check — the
+        # deliverable is N comments across N PRs, and the prompt's own
+        # post-and-verify loop is the enforcement). If opencode fails, the
+        # job fails red so the missed analysis is visible. The prompt keeps
+        # the worktree clean (scratch files under /tmp only), so opencode's
+        # end-of-run snapshot push is not attempted and no
+        # persist-credentials: false push failure can poison the run.

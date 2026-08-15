@@ -219,6 +219,92 @@ func TestReusableWorkflowsExcludeAiWorkflowsFromIndex(t *testing.T) {
 	}
 }
 
+// TestRenovateAnalysisHasConcurrencyGroup asserts the reusable
+// renovate-analysis.yml keys its job on a concurrency group with
+// cancel-in-progress, so overlapping runs (an explicit PR dispatch racing a
+// scheduled sweep) cannot both pass the prompt's updatedAt dedup check and
+// post duplicate `## Renovate PR Analysis` comments on the same PR. This is
+// the regression lock for the TOCTOU fix in the renovate-analysis design.
+func TestRenovateAnalysisHasConcurrencyGroup(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "renovate-analysis.yml")
+	if !strings.Contains(body, "concurrency:") {
+		t.Fatalf("renovate-analysis.yml: no job-level `concurrency:` block found.\n" +
+			"Without a concurrency group, a targeted dispatch running concurrently with a " +
+			"scheduled sweep can both analyze the same PR (both pass the updatedAt dedup " +
+			"check) and post duplicate analysis comments — or both attempt the same merge. " +
+			"See the concurrency comment in the workflow.")
+	}
+	if !strings.Contains(body, "cancel-in-progress: true") {
+		t.Errorf("renovate-analysis.yml: `concurrency:` block is missing `cancel-in-progress: true`.\n" +
+			"A stale run must be cancelled rather than allowed to finish alongside the new one.")
+	}
+	if !strings.Contains(body, "inputs.pr_number || github.ref") {
+		t.Errorf("renovate-analysis.yml: concurrency group is not keyed on `inputs.pr_number || github.ref`.\n" +
+			"A targeted PR dispatch must not be cancelled by an unrelated scheduled sweep and vice versa.")
+	}
+}
+
+// TestSelfRenovateAnalysisTriggerShape asserts the dogfood caller
+// self-renovate-analysis.yml triggers on exactly {schedule, workflow_dispatch}.
+// Both are repo events — no actor — so the opencode action's
+// assertPermissions() check (which requires the event actor to be a repo
+// collaborator and therefore always fails for renovate[bot]-authored
+// pull_request events) is skipped entirely. Re-adding any actor-bearing
+// trigger (pull_request, issue_comment, push) makes every renovate[bot]
+// event fail before the AI can analyze — the exact production failure mode
+// this workflow was designed around. This is the regression lock for the
+// schedule/dispatch-only design.
+func TestSelfRenovateAnalysisTriggerShape(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "self-renovate-analysis.yml")
+
+	// Extract the `on:` block: the lines after the top-level `on:` key up to
+	// the first top-level key that is not a trigger (here: `permissions:`).
+	onBlock := ""
+	lines := strings.Split(body, "\n")
+	inOn := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "on:":
+			inOn = true
+		case inOn && trimmed == "permissions:":
+			inOn = false
+		case inOn && strings.HasPrefix(line, "  ") && strings.TrimSpace(line) != "":
+			onBlock += line + "\n"
+		}
+	}
+	if onBlock == "" {
+		t.Fatalf("self-renovate-analysis.yml: could not extract the `on:` block — workflow structure changed; update this test")
+	}
+
+	allowlist := map[string]bool{"schedule:": true, "workflow_dispatch:": true}
+	for _, line := range strings.Split(onBlock, "\n") {
+		key := strings.TrimSpace(line)
+		if key == "" || strings.HasPrefix(key, "#") || key == "on:" {
+			continue
+		}
+		// Only trigger keys at two-space indentation count; nested keys
+		// (cron:, inputs:, description:, type:) are indented deeper.
+		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") {
+			if !allowlist[key] {
+				t.Errorf("self-renovate-analysis.yml: unexpected trigger %q in `on:` block.\n"+
+					"Only schedule + workflow_dispatch are allowed: both are repo events (no actor), so "+
+					"the opencode assertPermissions() check is skipped. An actor-bearing trigger "+
+					"(pull_request/issue_comment/push) fails for every renovate[bot] event before the "+
+					"AI can analyze — the failure mode this workflow was designed to avoid.\n"+
+					"on: block was:\n%s", key, onBlock)
+			}
+		}
+	}
+	for _, want := range []string{"schedule:", "workflow_dispatch:"} {
+		if !strings.Contains(onBlock, want) {
+			t.Errorf("self-renovate-analysis.yml: `on:` block is missing %q.\n"+
+				"Both repo-event triggers are required for the scheduled sweep and the manual "+
+				"pr_number dispatch.", want)
+		}
+	}
+}
+
 // TestPrReviewVerifyStepNegativeCase is the hermetic counterpart to
 // TestPrReviewToleratesOpenCodePushFailure: a hand-built workflow body that
 // is missing either half of the fix must be flagged by stepBlock /
@@ -491,6 +577,7 @@ func TestPropagateHasDogfoodBumpJob(t *testing.T) {
 		`consumers/ai-workflows.yaml`,
 		`self-pr-review.yml`,
 		`self-ai-comment.yml`,
+		`self-renovate-analysis.yml`,
 		`ai-sync render`,
 	} {
 		if !strings.Contains(jobBlock, want) {
@@ -686,10 +773,11 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 	}
 
 	// The discovery loop is the `for wf in ...` line that precedes the
-	// `OLD_TAG=` assignment. Pin its exact shape: all three consumer
+	// `OLD_TAG=` assignment. Pin its exact shape: all four consumer
 	// workflow files in the discovery order. This is what makes OLD_TAG
-	// discovery robust against consumers that lack ai-comment.yml.
-	const discoveryLoopHeader = "for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml; do"
+	// discovery robust against consumers that lack ai-comment.yml (or any
+	// of the other files).
+	const discoveryLoopHeader = "for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml .github/workflows/renovate-analysis.yml; do"
 	if !strings.Contains(bumpStep, discoveryLoopHeader) {
 		t.Errorf("propagate.yml: 'Bump tag' step is missing the multi-file discovery loop header.\n"+
 			"Expected to find: %q\n"+

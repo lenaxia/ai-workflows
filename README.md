@@ -229,7 +229,49 @@ jobs:
       project_name: myrepo
 ```
 
-**Self-hosted runners:** all three reusable workflows accept an optional `runs_on`
+```yaml
+# .github/workflows/renovate-analysis.yml
+name: Renovate PR Analysis
+
+# Scheduled + manual batch analysis of Renovate PRs. NOT pull_request —
+# renovate[bot] is an app bot and can never be a repo collaborator, so the
+# opencode action's assertPermissions() check fails on pull_request events
+# before the AI can analyze. schedule/workflow_dispatch are repo events (no
+# actor) and skip that check entirely.
+on:
+  schedule:
+    - cron: "0 */2 * * *"   # picks up newly-opened Renovate PRs
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to analyze (empty = all open Renovate PRs)"
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: write           # the agent may merge Safe-to-merge Renovate PRs
+  issues: write             # comment posting/verification
+  pull-requests: write
+
+jobs:
+  analyze-prs:
+    uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.10
+    secrets: inherit
+    with:
+      project_name: myrepo
+      pr_number: ${{ inputs.pr_number }}
+```
+
+The renovate-analysis caller needs the `renovate-analysis.md` prompt in the
+consumer's `.github/prompts/` (rendered by propagate, or forked and edited
+for repo-specific auto-merge exclusions). The analysis posts a
+`## Renovate PR Analysis` comment on every open Renovate PR and merges only
+PRs it recommends "Safe to merge". Note this caller takes NO `version:`
+input — unlike the other reusable workflows it performs no nested
+ai-workflows checkout, so the tag in the `uses:` ref is the version.
+
+**Self-hosted runners:** all four reusable workflows accept an optional `runs_on`
 input (defaults to `ubuntu-latest`). If your repo runs CI on a self-hosted runner
 label (e.g. gokore uses `gokore-runner`), pass it so AI jobs stay on your runner
 instead of silently moving to GitHub-hosted runners:

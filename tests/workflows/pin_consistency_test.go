@@ -1,11 +1,11 @@
 // Package workflows guards the GitHub Actions workflow files in .github/workflows/.
 //
 // This file locks the dogfood pin surface: the `uses:...@<tag>` / `version:`
-// tokens in the self-dogfood callers (self-ai-comment.yml, self-pr-review.yml)
-// and the consumer config (consumers/ai-workflows.yaml) must all agree. The
-// propagate.yml bump is sed-based and can touch one file and not the others,
-// silently re-introducing pin drift (see the #15 review and the fix that
-// aligned everything at v0.2.1).
+// tokens in the self-dogfood callers (self-ai-comment.yml, self-pr-review.yml,
+// self-renovate-analysis.yml) and the consumer config (consumers/ai-workflows.yaml)
+// must all agree. The propagate.yml bump is sed-based and can touch one file
+// and not the others, silently re-introducing pin drift (see the #15 review
+// and the fix that aligned everything at v0.2.1).
 //
 // Run: go test ./tests/workflows/...
 package workflows
@@ -25,6 +25,7 @@ var dogfoodPinSites = []string{
 	"consumers/ai-workflows.yaml",
 	".github/workflows/self-ai-comment.yml",
 	".github/workflows/self-pr-review.yml",
+	".github/workflows/self-renovate-analysis.yml",
 }
 
 // pins returns the set of version tags found in a file.

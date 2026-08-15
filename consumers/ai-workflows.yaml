@@ -7,21 +7,25 @@
 #
 # Fork policy mirrors the other non-gokore consumers (the command templates are
 # goKore-derived: rathena-client packets, hook events, builders, docs/07_WORK_LOG)
-# EXCEPT for three files this repo intentionally RENDERS:
+# EXCEPT for four files this repo intentionally RENDERS:
 #
-#   - pr-review.md       — so template changes (e.g. the commit-reviewed directive)
-#                          flow through and get exercised by real reviews here.
-#   - core-rules.md      — the shared spine is generic (TDD, Assumptions, Zero Tech
-#                          Debt); gokore-specifics live in {{ block }} slots that
-#                          render empty, so the rendered file is correct for any repo.
-#   - commands-footer.md — generic command-reference table; repo-agnostic.
+#   - pr-review.md            — so template changes (e.g. the commit-reviewed directive)
+#                               flow through and get exercised by real reviews here.
+#   - core-rules.md           — the shared spine is generic (TDD, Assumptions, Zero Tech
+#                               Debt); gokore-specifics live in {{ block }} slots that
+#                               render empty, so the rendered file is correct for any repo.
+#   - commands-footer.md      — generic command-reference table; repo-agnostic.
+#   - renovate-analysis.md    — the Renovate-PR analysis prompt consumed by the reusable
+#                               renovate-analysis.yml; rendering it here exercises the
+#                               exact prompt consumers receive (see self-renovate-analysis.yml).
 #
 # context.md is consumer-owned (never had a template).
 #
 # Rendered files are produced by `ai-sync render` and carry a managed-file banner.
 # The caller workflows live at .github/workflows/self-*.yml (the reusable workflow
 # definitions already occupy the canonical pr-review.yml / ai-comment.yml /
-# issue-opened.yml names in this repo, so the dogfood callers use a `self-` prefix).
+# issue-opened.yml / renovate-analysis.yml names in this repo, so the dogfood
+# callers use a `self-` prefix).
 #
 # NOTE: self-ai-comment.yml is wired up for /review only (the sole command
 # whose prompt ships). The other command prompts (fix.md, implement.md,

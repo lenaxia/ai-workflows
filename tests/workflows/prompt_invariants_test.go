@@ -119,3 +119,96 @@ func TestRenderedPromptsMatchTemplates(t *testing.T) {
 		}
 	}
 }
+
+// renderAiWorkflowsPrompt renders one prompt for the ai-workflows consumer and
+// returns its body (the file is rendered, not forked, for this consumer).
+func renderAiWorkflowsPrompt(t *testing.T, name string) string {
+	t.Helper()
+	root := workflowRoot(t)
+	bin := buildAiSync(t)
+	rendered := t.TempDir()
+
+	cmd := exec.Command(bin, "render", "--repo-root", root,
+		"--consumer", "ai-workflows", "--into", rendered)
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("render ai-workflows: %v\n%s", err, out)
+	}
+
+	body, err := os.ReadFile(filepath.Join(rendered, name))
+	if err != nil {
+		t.Fatalf("read rendered %s: %v", name, err)
+	}
+	return string(body)
+}
+
+// TestRenovateAnalysisPromptIsReadOnly asserts the rendered renovate-analysis.md
+// contains no instructions that require git push / branch creation. The
+// renovate-analysis workflow runs with contents: write but the consumer
+// checkout is persist-credentials: false, so any push/commit/branch
+// instruction fails inside the AI session. Mirror of
+// TestIssueResponderIsReadOnly for the renovate-analysis prompt.
+func TestRenovateAnalysisPromptIsReadOnly(t *testing.T) {
+	body := renderAiWorkflowsPrompt(t, "renovate-analysis.md")
+
+	denylist := []string{
+		"create a branch",
+		"git push",
+		"config/renovate-pr-",
+		"gh pr create",
+	}
+	for _, phrase := range denylist {
+		if strings.Contains(body, phrase) {
+			t.Errorf("rendered renovate-analysis.md contains push-triggering phrase %q — "+
+				"the renovate-analysis workflow's consumer checkout is persist-credentials: false "+
+				"and the agent cannot perform this action", phrase)
+		}
+	}
+
+	// The read-only scoping must be explicit, not merely implied by the
+	// absence of push phrases.
+	for _, want := range []string{
+		"Do NOT create branches or edit files",
+		"persist-credentials: false",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered renovate-analysis.md is missing the read-only scoping instruction %q.\n"+
+				"The prompt must explicitly tell the agent the checkout is read-only so it never "+
+				"attempts branch creation or edits that would fail to push.", want)
+		}
+	}
+}
+
+// TestRenovateAnalysisZeroTargetsDoesNotPostComment asserts the zero-open-PRs
+// path does NOT instruct the agent to post a comment. With no open Renovate
+// PRs there is no PR to comment on; an untargeted "post a comment" directive
+// hands an LLM holding issues: write an improvised destination every two
+// hours (the dominant steady state for most repos). The instruction must be
+// "report and stop" with no comment at all.
+func TestRenovateAnalysisZeroTargetsDoesNotPostComment(t *testing.T) {
+	body := renderAiWorkflowsPrompt(t, "renovate-analysis.md")
+
+	for _, phrase := range []string{
+		"post one short comment",
+		"post a single",
+		"post a comment stating",
+	} {
+		if strings.Contains(body, phrase) {
+			t.Errorf("rendered renovate-analysis.md zero-targets path instructs posting a comment (%q) — "+
+				"with no open Renovate PRs there is no PR to comment on, and an untargeted write "+
+				"lets the model improvise a destination (a new issue, an arbitrary thread) every "+
+				"scheduled tick. The instruction must be report-and-stop, no comment.", phrase)
+		}
+	}
+
+	for _, want := range []string{
+		"DO NOT post any comment",
+		"no open Renovate PRs were found",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered renovate-analysis.md is missing the report-and-stop zero-targets "+
+				"instruction %q. The no-open-PRs path must tell the agent to post nothing and "+
+				"report in its final summary.", want)
+		}
+	}
+}
