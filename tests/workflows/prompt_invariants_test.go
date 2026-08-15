@@ -212,3 +212,49 @@ func TestRenovateAnalysisZeroTargetsDoesNotPostComment(t *testing.T) {
 		}
 	}
 }
+
+// TestK8sMechanicForksAllTemplates asserts the k8s-mechanic consumer config
+// forks EVERY prompt template — the renderer must produce zero files for it.
+//
+// k8s-mechanic's prompts are 100% repo-specific (controller-runtime
+// reconciliation, RemediationJob CRDs, THREAT_MODEL posture — per the config
+// header), and the forked list is the only thing keeping propagate from
+// clobbering them with the goKore-derived generic templates (the exact
+// incident class — silent sync clobber — that motivated
+// TestIssueResponderIsReadOnly). The consumer config is parsed by a
+// homegrown, schema-less YAML subset (scripts/ai-sync/main.go): a future
+// mis-indented or typo'd entry (e.g. `renovate-anaysis.md`) silently lands
+// outside the `forked` section and un-forks the file with no test catching
+// it — this repo's PR CI is path-filtered and never touches consumers/.
+func TestK8sMechanicForksAllTemplates(t *testing.T) {
+	root := workflowRoot(t)
+	bin := buildAiSync(t)
+	rendered := t.TempDir()
+
+	cmd := exec.Command(bin, "render", "--repo-root", root,
+		"--consumer", "k8s-mechanic", "--into", rendered)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render k8s-mechanic: %v\n%s", err, out)
+	}
+
+	entries, err := os.ReadDir(rendered)
+	if err != nil {
+		t.Fatalf("read rendered dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) > 0 {
+		t.Errorf("k8s-mechanic render produced %d file(s): %v — every prompt template must be forked.\n"+
+			"The consumer's prompts are repo-specific; any file that renders here will be written by "+
+			"propagate and can clobber the consumer's forked copy with the generic template. A "+
+			"mis-indented or typo'd entry in the `forked:` list of consumers/k8s-mechanic.yaml "+
+			"silently un-forks the file. The config parses with a homegrown YAML subset, so this "+
+			"test is the guard. Renderer output:\n%s", len(files), files, out)
+	}
+}
