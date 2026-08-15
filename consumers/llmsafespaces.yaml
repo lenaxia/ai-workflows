@@ -29,6 +29,7 @@ forked:
   - implement.md
   - issue-responder.md
   - pr-review.md
+  - renovate-analysis.md
   - security.md
   - test.md
   - triage.md

@@ -17,6 +17,7 @@ vars:
 # Files gokore owns outright (sync skips these, consumer maintains them).
 forked:
   - context.md
+  - renovate-analysis.md
 
 # Per-repo override files. Each name maps to consumers/gokore/<name>.md.
 # Each file can define multiple {{ define "block_name" }} blocks that fill
