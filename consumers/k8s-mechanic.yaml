@@ -1,0 +1,44 @@
+# Consumer config for lenaxia/k8s-mechanic.
+#
+# k8s-mechanic is a Kubernetes operator (Go / controller-runtime) that watches
+# a cluster for failures (crash-looping Pods, degraded Deployments, NotReady
+# Nodes), spawns an in-cluster OpenCode agent to investigate, and opens PRs on
+# a GitOps repo with proposed fixes. Security is first-class: read-only RBAC,
+# secret redaction before any LLM call, and human-in-the-loop PR review.
+#
+# It uses ai-workflows for workflow PLUMBING only (reusable workflows,
+# route-command.sh, post-footer.sh, formal-blocking-review directive).
+#
+# All prompts are k8s-mechanic-specific (controller-runtime reconciliation,
+# RemediationJob CRDs, Helm chart, redact wrappers, THREAT_MODEL security
+# posture). The shared templates are goKore-derived and are wrong for this
+# repo — so every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: k8s-mechanic
+version: v0.2.9
+
+vars:
+  project_name: k8s-mechanic
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
