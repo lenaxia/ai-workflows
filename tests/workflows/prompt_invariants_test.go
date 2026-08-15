@@ -258,3 +258,58 @@ func TestK8sMechanicForksAllTemplates(t *testing.T) {
 			"test is the guard. Renderer output:\n%s", len(files), files, out)
 	}
 }
+
+// TestForkingConsumersDoNotRenderRenovateAnalysis asserts that every consumer
+// onboarding to the reusable renovate-analysis workflow (ai-workflows#36)
+// forks renovate-analysis.md — the renderer must NOT produce it.
+//
+// Each consumer runs the reusable workflow from .github/workflows/renovate-
+// analysis.yml@v0.2.10, which cats the consumer's OWN forked copy of
+// renovate-analysis.md (repo-specific exclusions, project context). If the
+// entry is missing from the `forked:` list, the renderer emits the generic
+// template and a later propagate run silently clobbers the consumer's forked
+// copy with the goKore/template version — the exact silent-sync-clobber
+// incident class that motivated TestK8sMechanicForksAllTemplates. The
+// homegrown YAML subset parser silently ignores mis-indented entries, so the
+// guard must be an explicit per-consumer assertion.
+func TestForkingConsumersDoNotRenderRenovateAnalysis(t *testing.T) {
+	root := workflowRoot(t)
+	bin := buildAiSync(t)
+
+	// Every consumer that has (or is being onboarded to) a forked
+	// renovate-analysis.md. Keep in sync with the `forked:` lists in
+	// consumers/*.yaml — adding a consumer here without adding the file to
+	// its forked list fails the test with the rendered file listed.
+	consumers := []string{
+		"containers",
+		"rathena-client",
+		"ai-or-not",
+		"gokore",
+		"synology-to-immich",
+		"ha-custom-components",
+		"llmsafespaces",
+		"tinyrsvp",
+		"talos-ops-prod",
+		"k8s-mechanic",
+	}
+
+	for _, consumer := range consumers {
+		consumer := consumer
+		t.Run(consumer, func(t *testing.T) {
+			rendered := t.TempDir()
+			cmd := exec.Command(bin, "render", "--repo-root", root,
+				"--consumer", consumer, "--into", rendered)
+			cmd.Dir = root
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("render %s: %v\n%s", consumer, err, out)
+			}
+
+			if _, err := os.Stat(filepath.Join(rendered, "renovate-analysis.md")); err == nil {
+				t.Errorf("render for consumer %s produced renovate-analysis.md — the consumer "+
+					"forks this prompt (repo-specific exclusions), so it must be in the `forked:` "+
+					"list of consumers/%s.yaml. A rendered copy would be clobbered by propagate "+
+					"and loses the consumer's repo-specific exclusions.", consumer, consumer)
+			}
+		})
+	}
+}
