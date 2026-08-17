@@ -1298,6 +1298,42 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 // this filter can be relaxed — but the test stays as a regression guard
 // against accidentally removing the filter and breaking bot-authored PRs
 // across the consumer fleet again.
+func TestPrReviewSkipsAutomationBots(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "pr-review.yml")
+
+	// Locate the `if:` filter block on the review job. Anchor to the
+	// contains(fromJson( line specifically — a bot name appearing only in
+	// a comment would satisfy a naive strings.Contains on the whole file.
+	ifLine := ""
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "contains(fromJson(") {
+			ifLine = line
+			break
+		}
+	}
+	if ifLine == "" {
+		t.Fatalf("pr-review.yml: no `contains(fromJson(...))` filter found on the review job — the bot-skip filter was removed. Restore it or update this test if the filter has been intentionally replaced.")
+	}
+
+	// Every bot in the canonical list must appear on the filter line itself.
+	requiredBots := []string{
+		`"renovate[bot]"`,
+		`"github-actions[bot]"`,
+		`"release-please[bot]"`,
+		`"dependabot[bot]"`,
+		`"mergify[bot]"`,
+		`"github-merge-queue[bot]"`,
+	}
+	for _, bot := range requiredBots {
+		if !strings.Contains(ifLine, bot) {
+			t.Errorf("pr-review.yml: bot filter is missing %s on the `if:` line.\n"+
+				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
+				"Add %s to the contains(fromJson([...])) filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
+		}
+	}
+}
+
 // TestTestRouterPathsCoverGuardedTrees asserts test-router.yml's `paths:`
 // filters (both push and pull_request) include every tree the test suites
 // guard. Pre-fix, the filters listed only scripts/route-command.sh,
@@ -1355,42 +1391,6 @@ func TestTestRouterPathsCoverGuardedTrees(t *testing.T) {
 					"gap that let workflow-file changes ship without CI execution. "+
 					"%s filter entries: %v", trigger, want, trigger, blocks[trigger])
 			}
-		}
-	}
-}
-
-func TestPrReviewSkipsAutomationBots(t *testing.T) {
-	root := invRoot(t)
-	body := readWorkflowFile(t, root, "pr-review.yml")
-
-	// Locate the `if:` filter block on the review job. Anchor to the
-	// contains(fromJson( line specifically — a bot name appearing only in
-	// a comment would satisfy a naive strings.Contains on the whole file.
-	ifLine := ""
-	for _, line := range strings.Split(body, "\n") {
-		if strings.Contains(line, "contains(fromJson(") {
-			ifLine = line
-			break
-		}
-	}
-	if ifLine == "" {
-		t.Fatalf("pr-review.yml: no `contains(fromJson(...))` filter found on the review job — the bot-skip filter was removed. Restore it or update this test if the filter has been intentionally replaced.")
-	}
-
-	// Every bot in the canonical list must appear on the filter line itself.
-	requiredBots := []string{
-		`"renovate[bot]"`,
-		`"github-actions[bot]"`,
-		`"release-please[bot]"`,
-		`"dependabot[bot]"`,
-		`"mergify[bot]"`,
-		`"github-merge-queue[bot]"`,
-	}
-	for _, bot := range requiredBots {
-		if !strings.Contains(ifLine, bot) {
-			t.Errorf("pr-review.yml: bot filter is missing %s on the `if:` line.\n"+
-				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
-				"Add %s to the contains(fromJson([...])) filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
 		}
 	}
 }

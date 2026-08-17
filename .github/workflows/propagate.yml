@@ -52,9 +52,12 @@ on:
 jobs:
   # dogfood-bump catches THIS repo's own dogfood pins up to the just-pushed
   # tag and regenerates the rendered prompts whose banner embeds the version.
-  # It runs on the default GITHUB_TOKEN (same-repo), so it works even when
-  # AI_WORKFLOWS_PAT is not set. The consumer-matrix `propagate` job below
-  # handles OTHER repos; this job handles the dogfood repo itself.
+  # The push step needs a Workflows-granted credential (tier 1/2): the
+  # commit touches .github/workflows/self-*.yml, which the GITHUB_TOKEN is
+  # policy-restricted from pushing; with no tier-1/2 credential the job
+  # computes the bump and skips the self-PR with a ::warning::. The
+  # consumer-matrix `propagate` job below handles OTHER repos; this job
+  # handles the dogfood repo itself.
   #
   # Skipped on single-consumer workflow_dispatch (nothing to dogfood-bump
   # for one consumer).
