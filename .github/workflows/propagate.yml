@@ -17,20 +17,23 @@
 #
 # Triggered manually via workflow_dispatch for testing, or by tag push.
 #
-# AUTH:
-#   Cross-repo operations (checkout of a PRIVATE consumer, opening a PR in
-#   any consumer) require AI_WORKFLOWS_PAT - a PAT with repo + workflow scope
-#   stored as a secret in THIS repo. The default GITHUB_TOKEN can't do those.
-#   If AI_WORKFLOWS_PAT is unset, the workflow degrades gracefully instead of
-#   failing with a cryptic "Input required and not supplied: token":
-#     - public-consumer checkout + render + diff still run (via GITHUB_TOKEN
-#       fallback), so the run summary reports what WOULD change
-#     - the cross-repo PR step is skipped with a visible ::warning::
-#     - the dogfood-bump job (same-repo) runs regardless - it only needs
-#       GITHUB_TOKEN
-#   Pre-this-fix, propagate had been failing on every release since v0.2.2
-#   with "Input required and not supplied: token" the moment AI_WORKFLOWS_PAT
-#   was empty - blocking all consumer sync.
+# AUTH (three tiers, resolved per run — see the Resolve auth steps):
+#   1. GitHub App (preferred, rotation-free): AI_WORKFLOWS_APP_ID +
+#      AI_WORKFLOWS_APP_PRIVATE_KEY secrets mint a 1h installation token via
+#      actions/create-github-app-token. The app needs Contents RW,
+#      Pull requests RW, Workflows RW on this org's repos (including the
+#      private consumer gokore and THIS repo for dogfood-bump). The private
+#      key never expires - regenerate only on suspicion - so there is no
+#      PAT-style rotation to schedule.
+#   2. AI_WORKFLOWS_PAT (legacy): classic PAT with repo + workflow scope.
+#   3. GITHUB_TOKEN (last resort): public-consumer read-only fallback.
+#   Tiers 1 and 2 can open cross-repo sync PRs and push workflow-file
+#   changes; tier 3 cannot (it renders + diffs public consumers only and
+#   skips every PR step with a visible ::warning::).
+#
+#   Pre-fix history: an empty AI_WORKFLOWS_PAT made actions/checkout@v6 fail
+#   with a generic "Input required and not supplied: token" - blocking all
+#   consumer sync from v0.2.2 through v0.2.4.
 
 name: Propagate
 
@@ -62,27 +65,58 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      - name: Detect app credentials
+        # The secrets context is not reliably usable in a step `if:`, so a
+        # bash probe reads the two app secrets from env and the token-mint
+        # step below is gated on this output. Skipped minting when the
+        # secrets are absent keeps the PAT/GITHUB_TOKEN tiers reachable.
+        id: appdetect
+        env:
+          APP_ID: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          APP_KEY: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate app token
+        # Mints a 1h installation token (Contents/PR/Workflows RW on every
+        # repo the app is installed on). A misconfigured key fails loudly
+        # here rather than silently degrading - that is intentional.
+        id: app_token
+        if: steps.appdetect.outputs.has_app == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+
       - name: Resolve auth (dogfood-bump)
         # The dogfood-bump commit modifies .github/workflows/self-*.yml
         # (the dogfood pin sites). The GITHUB_TOKEN CANNOT push commits
         # that touch .github/workflows/* - this is a policy-level
         # restriction on all GitHub-App-backed tokens, NOT a scope issue,
-        # so no `permissions:` key can override it. Only a PAT with
-        # `workflow` scope (AI_WORKFLOWS_PAT) can push such a commit.
-        # When the PAT is absent, the push step below is skipped with a
-        # ::warning:: (same graceful-degradation pattern as the consumer
-        # propagate job). The org admin must set AI_WORKFLOWS_PAT for
-        # fully-automated dogfood-bump.
+        # so no `permissions:` key can override it. Only a credential with
+        # the Workflows grant can push such a commit: the GitHub App token
+        # (tier 1) or AI_WORKFLOWS_PAT (tier 2). When neither is available,
+        # the push step below is skipped with a ::warning::.
         id: auth
         env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
           PAT: ${{ secrets.AI_WORKFLOWS_PAT }}
         run: |
-          if [ -n "$PAT" ]; then
+          if [ -n "$APP_TOKEN" ]; then
+            echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "mode=app" >> "$GITHUB_OUTPUT"
+            echo "Resolved auth: GitHub App installation token (can push workflow-file changes)"
+          elif [ -n "$PAT" ]; then
+            echo "token=$PAT" >> "$GITHUB_OUTPUT"
             echo "mode=pat" >> "$GITHUB_OUTPUT"
             echo "Resolved auth: AI_WORKFLOWS_PAT (can push workflow-file changes)"
           else
-            echo "mode=no-pat" >> "$GITHUB_OUTPUT"
-            echo "::warning::AI_WORKFLOWS_PAT is not set - the dogfood-bump job computes the pin bump + re-render locally but CANNOT push the result. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no `permissions:` key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually as in PR #20."
+            echo "mode=no-credentials" >> "$GITHUB_OUTPUT"
+            echo "::warning::No push credential available (GitHub App secrets AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY unset and AI_WORKFLOWS_PAT unset) - the dogfood-bump job computes the pin bump + re-render locally but CANNOT push the result. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no `permissions:` key overrides this). Set the app secrets (preferred - no rotation) or AI_WORKFLOWS_PAT and re-run, or apply the bump manually as in PR #20."
           fi
 
       - name: Checkout ai-workflows (self)
@@ -157,13 +191,13 @@ jobs:
           fi
 
       - name: Open dogfood-bump PR
-        # Only runs when AI_WORKFLOWS_PAT is available: the commit modifies
-        # .github/workflows/self-*.yml, which the GITHUB_TOKEN is
-        # policy-restricted from pushing (no `permissions:` key overrides
-        # this). The PAT has `workflow` scope and can push it.
-        if: steps.auth.outputs.mode == 'pat' && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
+        # Only runs when a Workflows-granted credential is available (App
+        # token or PAT): the commit modifies .github/workflows/self-*.yml,
+        # which the GITHUB_TOKEN is policy-restricted from pushing (no
+        # `permissions:` key overrides this).
+        if: (steps.auth.outputs.mode == 'app' || steps.auth.outputs.mode == 'pat') && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
         env:
-          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
           set -euo pipefail
@@ -204,14 +238,14 @@ jobs:
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated dogfood-bump to ${NEW_TAG} (re-targeted existing PR)."
 
-      - name: Skip dogfood-bump PR (no PAT)
-        # Graceful degradation: without AI_WORKFLOWS_PAT the bump is computed
-        # (the Bump dogfood pins + Regenerate rendered prompts steps above
-        # ran and their diff is visible in the run log via the Detect
-        # changes step) but NOT pushed. The operator applies it manually
-        # (the exact manual process is documented in PR #20) or sets the
-        # PAT and re-runs.
-        if: steps.auth.outputs.mode != 'pat' && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
+      - name: Skip dogfood-bump PR (no push token)
+        # Graceful degradation: without a Workflows-granted credential the
+        # bump is computed (the Bump dogfood pins + Regenerate rendered
+        # prompts steps above ran and their diff is visible in the run log
+        # via the Detect changes step) but NOT pushed. The operator applies
+        # it manually (the exact manual process is documented in PR #20) or
+        # sets the app secrets / PAT and re-runs.
+        if: steps.auth.outputs.mode != 'app' && steps.auth.outputs.mode != 'pat' && steps.changes.outputs.changed == 'true' && steps.tests.outcome == 'success'
         env:
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
@@ -250,28 +284,63 @@ jobs:
         if: steps.target.outputs.skip == 'true'
         run: echo "Skipping ${{ matrix.consumer }} - single-consumer dispatch."
 
+      - name: Detect app credentials
+        # Same probe as the dogfood-bump job: the secrets context is not
+        # reliably usable in a step `if:`, so bash reads the app secrets
+        # from env and gates the token-mint step below.
+        if: steps.target.outputs.skip != 'true'
+        id: appdetect
+        env:
+          APP_ID: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          APP_KEY: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "has_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_app=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate app token
+        # 1h installation token with Contents/PR/Workflows RW on every repo
+        # the app is installed on (all consumers + this repo). Default
+        # installation scope - no owner/repositories inputs - because the
+        # consumer matrix needs different repos per leg.
+        if: steps.target.outputs.skip != 'true' && steps.appdetect.outputs.has_app == 'true'
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+
       - name: Resolve auth token
         # Cross-repo checkout + cross-repo PR both need a token with access
-        # beyond this repo. AI_WORKFLOWS_PAT (a PAT with repo + workflow scope)
-        # is the canonical credential; if it is not set, fall back to the
-        # default GITHUB_TOKEN, which can read PUBLIC repos only and cannot
-        # open cross-repo PRs. The PR step below is gated on mode == 'pat'.
-        # Pre-this-fix, an empty AI_WORKFLOWS_PAT made actions/checkout@v6
-        # fail with a generic "Input required and not supplied: token".
+        # beyond this repo. Tier 1: GitHub App installation token (minted
+        # above when the app secrets are set). Tier 2: AI_WORKFLOWS_PAT (a
+        # PAT with repo + workflow scope). Tier 3: the default
+        # GITHUB_TOKEN, which can read PUBLIC repos only and cannot open
+        # cross-repo PRs. The PR steps below are gated on mode being
+        # 'app' or 'pat'. Pre-this-fix, an empty AI_WORKFLOWS_PAT made
+        # actions/checkout@v6 fail with a generic "Input required and not
+        # supplied: token".
         id: auth
         if: steps.target.outputs.skip != 'true'
         env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
           PAT: ${{ secrets.AI_WORKFLOWS_PAT }}
           GT: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "$PAT" ]; then
+          if [ -n "$APP_TOKEN" ]; then
+            echo "token=$APP_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "mode=app" >> "$GITHUB_OUTPUT"
+            echo "Resolved auth: GitHub App installation token (full cross-repo capability)"
+          elif [ -n "$PAT" ]; then
             echo "token=$PAT" >> "$GITHUB_OUTPUT"
             echo "mode=pat" >> "$GITHUB_OUTPUT"
             echo "Resolved auth: AI_WORKFLOWS_PAT (full cross-repo capability)"
           else
             echo "token=$GT" >> "$GITHUB_OUTPUT"
             echo "mode=github-token-fallback" >> "$GITHUB_OUTPUT"
-            echo "::warning::AI_WORKFLOWS_PAT is not set - falling back to GITHUB_TOKEN. Public consumers will check out and render, but the cross-repo sync PR will be SKIPPED (GITHUB_TOKEN can't open PRs in other repos). Private consumer (gokore) checkout will fail. Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run to enable full propagation."
+            echo "::warning::No cross-repo credential available (GitHub App secrets AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY unset and AI_WORKFLOWS_PAT unset) - falling back to GITHUB_TOKEN. Public consumers will check out and render, but the cross-repo sync PR will be SKIPPED (GITHUB_TOKEN can't open PRs in other repos). Private consumer (gokore) checkout will fail. Set the app secrets (preferred - no rotation) or AI_WORKFLOWS_PAT and re-run to enable full propagation."
           fi
 
       - name: Checkout ai-workflows
@@ -391,15 +460,16 @@ jobs:
           echo "Consumer ${{ matrix.consumer }} default branch: ${DEFAULT_BRANCH}"
 
       - name: Open sync PR
-        # Cross-repo PRs require a PAT. GITHUB_TOKEN cannot open PRs in other
-        # repos even if they're public. When AI_WORKFLOWS_PAT is unset we skip
-        # with a visible warning rather than failing - the render/diff above
-        # still ran (for public consumers), so an operator can see what WOULD
-        # have been proposed.
-        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode == 'pat'
+        # Cross-repo PRs require a credential beyond this repo: the GitHub
+        # App token or the PAT. GITHUB_TOKEN cannot open PRs in other repos
+        # even if they're public. When neither tier-1/2 credential is set we
+        # skip with a visible warning rather than failing - the render/diff
+        # above still ran (for public consumers), so an operator can see
+        # what WOULD have been proposed.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && (steps.auth.outputs.mode == 'app' || steps.auth.outputs.mode == 'pat')
         working-directory: consumer
         env:
-          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           BRANCH="sync/ai-workflows-${{ steps.ver.outputs.v }}"
           git checkout -b "$BRANCH"
@@ -423,20 +493,21 @@ jobs:
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated sync to ai-workflows@${{ steps.ver.outputs.v }} (re-targeted existing PR)."
 
-      - name: Skip sync PR (no PAT)
-        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode != 'pat'
+      - name: Skip sync PR (no cross-repo token)
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode != 'app' && steps.auth.outputs.mode != 'pat'
         run: |
-          echo "::warning::Cannot open a cross-repo sync PR in ${{ matrix.consumer }} without AI_WORKFLOWS_PAT (GITHUB_TOKEN can't open PRs in other repos). The rendered/bumped changes were computed in the runner workspace (see the Render into consumer and Bump tag steps above) but were NOT pushed. Set AI_WORKFLOWS_PAT (a PAT with repo + workflow scope) and re-run this workflow to deliver ${{ steps.ver.outputs.v }} to ${{ matrix.consumer }}."
+          echo "::warning::Cannot open a cross-repo sync PR in ${{ matrix.consumer }} without a cross-repo credential (GitHub App secrets AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY, or AI_WORKFLOWS_PAT - GITHUB_TOKEN can't open PRs in other repos). The rendered/bumped changes were computed in the runner workspace (see the Render into consumer and Bump tag steps above) but were NOT pushed. Set the app secrets (preferred - no rotation) or AI_WORKFLOWS_PAT and re-run this workflow to deliver ${{ steps.ver.outputs.v }} to ${{ matrix.consumer }}."
 
       - name: Update AI_WORKFLOWS_PIN variable (audit record)
         # The functional pin is the hardcoded @<tag> in the workflow files
         # (bumped above). This variable is kept as an audit/lookup record only
         # - it is not read by any workflow's uses: ref.
-        # Skipped without PAT: setting a repo variable on another repo needs
-        # a PAT with admin scope, which GITHUB_TOKEN doesn't have cross-repo.
-        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode == 'pat'
+        # Skipped without a tier-1/2 credential: setting a repo variable on
+        # another repo needs admin-level access; the step itself is tolerant
+        # (|| true) if the credential lacks it.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && (steps.auth.outputs.mode == 'app' || steps.auth.outputs.mode == 'pat')
         env:
-          GH_TOKEN: ${{ secrets.AI_WORKFLOWS_PAT }}
+          GH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           gh api -X DELETE repos/lenaxia/${{ matrix.consumer }}/actions/variables/AI_WORKFLOWS_PIN 2>/dev/null || true
           gh api repos/lenaxia/${{ matrix.consumer }}/actions/variables \

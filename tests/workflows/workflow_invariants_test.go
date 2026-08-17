@@ -104,18 +104,18 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 		t.Fatal("pr-review.yml: no 'Run OpenCode' step found — workflow structure changed; update this test")
 	}
 	if !strings.Contains(runStep, "continue-on-error: true") {
-		t.Errorf("pr-review.yml: 'Run OpenCode' step is missing `continue-on-error: true`.\n"+
-			"opencode unconditionally runs `git push` at end-of-run; under the "+
-			"read-only job token (contents: read) that push dies with HTTP 403 "+
-			"and opencode exits 1, marking the job FAILED even when "+
+		t.Errorf("pr-review.yml: 'Run OpenCode' step is missing `continue-on-error: true`.\n" +
+			"opencode unconditionally runs `git push` at end-of-run; under the " +
+			"read-only job token (contents: read) that push dies with HTTP 403 " +
+			"and opencode exits 1, marking the job FAILED even when " +
 			"the review was posted successfully. See issue #17 Bug A.")
 	}
 
 	verifyStep := stepBlock(body, "Verify review submitted")
 	if verifyStep == "" {
-		t.Fatalf("pr-review.yml: no 'Verify review submitted' step found.\n"+
-			"Without it, continue-on-error on the Run OpenCode step would mask "+
-			"real opencode crashes as successes. Both halves of the fix must "+
+		t.Fatalf("pr-review.yml: no 'Verify review submitted' step found.\n" +
+			"Without it, continue-on-error on the Run OpenCode step would mask " +
+			"real opencode crashes as successes. Both halves of the fix must " +
 			"remain together. See issue #17 Bug A.")
 	}
 
@@ -197,21 +197,21 @@ func TestPrReviewCheckoutPersistsCredentials(t *testing.T) {
 	}
 	persistTrue, contentsRead := prReviewCredentialDirectives(body)
 	if !persistTrue {
-		t.Errorf("pr-review.yml: 'Checkout consumer repository' has no `persist-credentials: true` directive line.\n"+
-			"opencode's startup `git fetch origin --depth=20 <PR branch>` needs the "+
-			"credential on private consumers (gokore): anonymous fetch fails with "+
-			"`could not read Username` exit 128 and the run dies before the LLM executes — "+
-			"the v0.2.2–v0.2.10 regression that red-lit every gokore review. "+
-			"Reviews-only is enforced by the contents: read job token (pushes 403), "+
+		t.Errorf("pr-review.yml: 'Checkout consumer repository' has no `persist-credentials: true` directive line.\n" +
+			"opencode's startup `git fetch origin --depth=20 <PR branch>` needs the " +
+			"credential on private consumers (gokore): anonymous fetch fails with " +
+			"`could not read Username` exit 128 and the run dies before the LLM executes — " +
+			"the v0.2.2–v0.2.10 regression that red-lit every gokore review. " +
+			"Reviews-only is enforced by the contents: read job token (pushes 403), " +
 			"not by dropping the credential. See README Lessons Learned #7.")
 	}
 	// And it must remain a read-only token: persisting credentials would
 	// otherwise grant push rights if contents were ever widened. Lock the
 	// permissions-block shape the safety argument depends on.
 	if !contentsRead {
-		t.Errorf("pr-review.yml: review job's `permissions:` block has no `contents: read` directive line.\n"+
-			"The safety argument for persist-credentials: true (startup fetch works, "+
-			"end-of-run push 403s) depends on the read-only token scope. If push "+
+		t.Errorf("pr-review.yml: review job's `permissions:` block has no `contents: read` directive line.\n" +
+			"The safety argument for persist-credentials: true (startup fetch works, " +
+			"end-of-run push 403s) depends on the read-only token scope. If push " +
 			"capability is ever needed here, re-evaluate this whole pattern.")
 	}
 }
@@ -587,24 +587,32 @@ func TestPrReviewVerifyStepNegativeCase(t *testing.T) {
 // it. The tests below lock the invariants of the post-issue-#17-and-beyond
 // rewrite:
 //
+//   - Auth is a three-tier chain resolved per run: GitHub App installation
+//     token (AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY, minted via
+//     actions/create-github-app-token, 1h expiry - rotation-free) →
+//     AI_WORKFLOWS_PAT (classic PAT, repo + workflow scope) → GITHUB_TOKEN
+//     (public-consumer read-only fallback). The app tier exists so no
+//     long-lived user PAT is required; only the app's private key is
+//     long-lived and it never expires.
+//
 //   - The consumer checkout must NOT pass secrets.AI_WORKFLOWS_PAT directly
 //     to actions/checkout's `token:` field. When that secret is unset (the
 //     default state for this repo), the empty string propagates to the
 //     action and checkout fails with a generic "Input required and not
 //     supplied: token", which is exactly what broke propagate.yml across
 //     v0.2.2/v0.2.3/v0.2.4. The fix routes through a `Resolve auth token`
-//     step whose output is the PAT-or-GITHUB_TOKEN fallback; the checkout
-//     reads steps.auth.outputs.token instead.
+//     step whose output is the app-token/PAT/GITHUB_TOKEN fallback; the
+//     checkout reads steps.auth.outputs.token instead.
 //
 //   - A `dogfood-bump` job must exist: it bumps THIS repo's own dogfood pin
 //     sites (self-pr-review.yml, self-ai-comment.yml, consumers/ai-workflows.yaml)
 //     on every tag push. Without it, those pins silently drift (they were
 //     stuck at v0.2.1 across v0.2.2/v0.2.3 until PR #20 caught them up).
 //
-//   - The cross-repo PR step must be gated on the auth mode being 'pat':
-//     GITHUB_TOKEN can read public consumer repos but cannot open PRs in
-//     other repos, so attempting it would fail. A companion skip step emits
-//     a visible ::warning:: instead.
+//   - The cross-repo PR steps must be gated on a tier-1/2 credential being
+//     present (mode 'app' or 'pat'): GITHUB_TOKEN can read public consumer
+//     repos but cannot open PRs in other repos, so attempting it would
+//     fail. A companion skip step emits a visible ::warning:: instead.
 
 // hasJob is a small helper that reports whether the YAML body declares a
 // top-level job with the given name. It matches `  <name>:` at exactly two
@@ -645,36 +653,97 @@ func TestPropagateCheckoutDoesNotUseRawPAT(t *testing.T) {
 }
 
 // TestPropagateHasAuthTokenResolutionStep asserts the 'Resolve auth token'
-// step exists and emits both the PAT and GITHUB_TOKEN env vars (so the shell
-// fallback `if [ -n \"$PAT\" ]; then ... else $GT; fi` can work).
+// step exists and implements the full three-tier chain: it consumes the
+// minted app token (tier 1), the PAT (tier 2), and the GITHUB_TOKEN
+// fallback (tier 3), emitting a distinct mode for each so the downstream
+// gates can distinguish cross-repo capability from read-only fallback.
 func TestPropagateHasAuthTokenResolutionStep(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
 	authStep := stepBlock(body, "Resolve auth token")
 	if authStep == "" {
 		t.Fatal("propagate.yml: no 'Resolve auth token' step found.\n" +
-			"This step resolves AI_WORKFLOWS_PAT -> GITHUB_TOKEN so an empty PAT degrades gracefully " +
+			"This step resolves app-token/PAT/GITHUB_TOKEN so an empty credential set degrades gracefully " +
 			"instead of crashing actions/checkout with 'Input required and not supplied: token'.")
 	}
 	for _, want := range []string{
+		`APP_TOKEN: ${{ steps.app_token.outputs.token }}`,
 		`PAT: ${{ secrets.AI_WORKFLOWS_PAT }}`,
 		`GT: ${{ secrets.GITHUB_TOKEN }}`,
+		`mode=app`,
 		`mode=pat`,
 		`mode=github-token-fallback`,
 	} {
 		if !strings.Contains(authStep, want) {
 			t.Errorf("propagate.yml: 'Resolve auth token' step is missing %q.\n"+
-				"This substring locks one of the properties that make the token fallback work. "+
+				"This substring locks one of the properties that make the three-tier auth fallback work. "+
 				"Step body was:\n%s", want, authStep)
 		}
 	}
 }
 
-// TestPropagatePRStepGatedOnPAT asserts the cross-repo 'Open sync PR' step
-// is gated on steps.auth.outputs.mode == 'pat'. GITHUB_TOKEN cannot open PRs
-// in other repos (even public ones), so attempting it without a PAT would
-// fail; the gate ensures the skip step (which emits a ::warning::) runs
-// instead.
-func TestPropagatePRStepGatedOnPAT(t *testing.T) {
+// TestPropagateHasAppTokenMintingSteps asserts both jobs (dogfood-bump and
+// the consumer matrix) carry the full app-token minting pair: a bash probe
+// that reads the app secrets from env (the secrets context is not reliably
+// usable in a step `if:`) and the pinned create-github-app-token action
+// gated on it. Removing either breaks tier 1 silently - the workflow falls
+// back to PAT/GITHUB_TOKEN and, with no PAT set, sync PRs stop appearing
+// with only a warning (the exact v0.2.2-v0.2.4 failure shape).
+func TestPropagateHasAppTokenMintingSteps(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+
+	detectStep := stepBlock(body, "Detect app credentials")
+	if detectStep == "" {
+		t.Fatal("propagate.yml: no 'Detect app credentials' step found.\n" +
+			"The secrets context is not reliably usable in a step `if:`; this bash probe gates " +
+			"the token-mint step so absent app secrets degrade to the PAT/GITHUB_TOKEN tiers.")
+	}
+	for _, want := range []string{
+		`APP_ID: ${{ secrets.AI_WORKFLOWS_APP_ID }}`,
+		`APP_KEY: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}`,
+		`has_app=true`,
+		`has_app=false`,
+	} {
+		if !strings.Contains(detectStep, want) {
+			t.Errorf("propagate.yml: 'Detect app credentials' step is missing %q.\nStep body was:\n%s", want, detectStep)
+		}
+	}
+
+	mintStep := stepBlock(body, "Generate app token")
+	if mintStep == "" {
+		t.Fatal("propagate.yml: no 'Generate app token' step found.\n" +
+			"This step mints the 1h installation token (tier 1) via the pinned " +
+			"actions/create-github-app-token action.")
+	}
+	for _, want := range []string{
+		`actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1`,
+		`app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}`,
+		`private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}`,
+		`steps.appdetect.outputs.has_app == 'true'`,
+	} {
+		if !strings.Contains(mintStep, want) {
+			t.Errorf("propagate.yml: 'Generate app token' step is missing %q.\n"+
+				"This substring locks one of the app-token minting properties (pin, secret inputs, probe gate). "+
+				"Step body was:\n%s", want, mintStep)
+		}
+	}
+
+	// Both jobs need the pair: count occurrences across the whole file.
+	if got := strings.Count(body, "name: Detect app credentials"); got != 2 {
+		t.Errorf("propagate.yml: expected 'Detect app credentials' in BOTH jobs (dogfood-bump + consumer matrix), found %d", got)
+	}
+	if got := strings.Count(body, "name: Generate app token"); got != 2 {
+		t.Errorf("propagate.yml: expected 'Generate app token' in BOTH jobs (dogfood-bump + consumer matrix), found %d", got)
+	}
+}
+
+// TestPropagatePRStepGatedOnCrossRepoAuth asserts the cross-repo 'Open sync
+// PR' step is gated on a tier-1/2 credential (mode 'app' or 'pat').
+// GITHUB_TOKEN cannot open PRs in other repos (even public ones), so
+// attempting it without one would fail; the gate ensures the skip step
+// (which emits a ::warning::) runs instead. The step must also draw its
+// GH_TOKEN from the resolved auth output, not a raw secret - an empty
+// AI_WORKFLOWS_PAT would otherwise silently downgrade to anonymous gh calls.
+func TestPropagatePRStepGatedOnCrossRepoAuth(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
 	prStep := stepBlock(body, "Open sync PR")
 	if prStep == "" {
@@ -682,44 +751,61 @@ func TestPropagatePRStepGatedOnPAT(t *testing.T) {
 	}
 	// Pull the `if:` line out of the step block (first non-comment/
 	// non-blank line starting with `if:`).
+	prIf := ""
 	for _, line := range strings.Split(strings.TrimPrefix(prStep, "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") || trimmed == "" {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "if:") {
-			if !strings.Contains(trimmed, "steps.auth.outputs.mode == 'pat'") {
-				t.Errorf("propagate.yml: 'Open sync PR' if: line is `%s` but does not gate on steps.auth.outputs.mode == 'pat'.\n"+
-					"Without that gate, the PR step would run with GITHUB_TOKEN (the fallback) and fail, since GITHUB_TOKEN "+
-					"cannot open PRs in other repos. if: line was:\n%s", trimmed, trimmed)
-			}
-			return
+			prIf = trimmed
+			break
 		}
 	}
-	t.Errorf("propagate.yml: 'Open sync PR' step has no if: directive at all - it would run unconditionally.")
+	if prIf == "" {
+		t.Errorf("propagate.yml: 'Open sync PR' step has no if: directive at all - it would run unconditionally.")
+	} else {
+		for _, want := range []string{
+			`steps.auth.outputs.mode == 'app'`,
+			`steps.auth.outputs.mode == 'pat'`,
+		} {
+			if !strings.Contains(prIf, want) {
+				t.Errorf("propagate.yml: 'Open sync PR' if: line is `%s` but does not gate on %s.\n"+
+					"Without that gate, the PR step would run with GITHUB_TOKEN (the fallback) and fail, since "+
+					"GITHUB_TOKEN cannot open PRs in other repos. if: line was:\n%s", prIf, want, prIf)
+			}
+		}
+	}
+	if !strings.Contains(prStep, `GH_TOKEN: ${{ steps.auth.outputs.token }}`) {
+		t.Errorf("propagate.yml: 'Open sync PR' step does not read GH_TOKEN from steps.auth.outputs.token.\n" +
+			"A raw secret reference (secrets.AI_WORKFLOWS_PAT) resolves to an empty string when unset, " +
+			"silently downgrading the gh calls to anonymous. The resolved token output is the only safe source.")
+	}
 }
 
-// TestPropagateHasSkipStepForMissingPAT asserts the graceful-degradation
-// branch exists: when auth mode is not 'pat', a dedicated step emits a
-// ::warning:: so the operator is told WHY no PR was opened and how to fix
-// it (set AI_WORKFLOWS_PAT and re-run). Pre-fix, the missing-PAT path just
-// crashed at checkout with a generic error.
-func TestPropagateHasSkipStepForMissingPAT(t *testing.T) {
+// TestPropagateHasSkipStepForMissingCredentials asserts the
+// graceful-degradation branch exists: when no tier-1/2 credential is
+// resolved, a dedicated step emits a ::warning:: so the operator is told
+// WHY no PR was opened and how to fix it. Pre-fix, the missing-credential
+// path just crashed at checkout with a generic error.
+func TestPropagateHasSkipStepForMissingCredentials(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
-	skipStep := stepBlock(body, "Skip sync PR (no PAT)")
+	skipStep := stepBlock(body, "Skip sync PR (no cross-repo token)")
 	if skipStep == "" {
-		t.Fatal("propagate.yml: no 'Skip sync PR (no PAT)' step found.\n" +
-			"This is the graceful-degradation branch: when AI_WORKFLOWS_PAT is not set, " +
+		t.Fatal("propagate.yml: no 'Skip sync PR (no cross-repo token)' step found.\n" +
+			"This is the graceful-degradation branch: when neither the app secrets nor the PAT is set, " +
 			"the cross-repo PR step is skipped and this step emits a ::warning:: telling the operator " +
-			"how to enable full propagation (set the PAT and re-run).")
+			"how to enable full propagation (set the credentials and re-run).")
 	}
 	for _, want := range []string{
+		`steps.auth.outputs.mode != 'app'`,
 		`steps.auth.outputs.mode != 'pat'`,
 		`::warning::`,
+		`AI_WORKFLOWS_APP_ID`,
 		`AI_WORKFLOWS_PAT`,
 	} {
 		if !strings.Contains(skipStep, want) {
-			t.Errorf("propagate.yml: 'Skip sync PR (no PAT)' step is missing %q.\n"+
+			t.Errorf("propagate.yml: 'Skip sync PR (no cross-repo token)' step is missing %q.\n"+
 				"Step body was:\n%s", want, skipStep)
 		}
 	}
@@ -1071,13 +1157,13 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 	}
 }
 
-// TestPropagateDogfoodBumpPRGatedOnPAT asserts the dogfood-bump job gates
-// its push/PR step on AI_WORKFLOWS_PAT being available. The job's commit
-// modifies .github/workflows/self-*.yml (the dogfood pin sites); the
-// GITHUB_TOKEN is POLICY-restricted from pushing workflow-file changes
-// (no `permissions:` key overrides this — it's a GitHub-App-token-level
-// restriction, not a scope issue), so only a PAT with `workflow` scope
-// can push it.
+// TestPropagateDogfoodBumpPRGatedOnAuth asserts the dogfood-bump job gates
+// its push/PR step on a Workflows-granted credential being available. The
+// job's commit modifies .github/workflows/self-*.yml (the dogfood pin
+// sites); the GITHUB_TOKEN is POLICY-restricted from pushing workflow-file
+// changes (no `permissions:` key overrides this — it's a GitHub-App-token-level
+// restriction, not a scope issue), so only the GitHub App token (Workflows
+// RW) or a PAT with `workflow` scope can push it.
 //
 // An earlier iteration of this fix tried to declare `workflows: write` in
 // the job's permissions block. That key does not exist in the GITHUB_TOKEN
@@ -1086,9 +1172,9 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 // repository-projects, security-events, statuses) and the unknown key made
 // GitHub Actions reject the whole workflow with a "workflow file issue"
 // startup failure — blocking EVERY propagate run (v0.2.6 included). This
-// test now locks the correct shape: a Resolve auth token step + a PR step
-// gated on mode == 'pat' + a Skip step for the no-PAT case.
-func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
+// test now locks the correct shape: app-token/PAT resolution + a PR step
+// gated on mode app/pat + a Skip step for the no-credential case.
+func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
 	jobBlock := extractJobBlock(body, "dogfood-bump")
 	if jobBlock == "" {
@@ -1111,13 +1197,15 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 			"step + the mode == 'pat' gate on the Open dogfood-bump PR step).")
 	}
 
-	// The dogfood-bump job must have its own PAT-resolution pattern (the
-	// consumer-matrix job has a separate Resolve auth token step). Confirm
-	// the dogfood-bump block contains the mode=pat / mode=no-pat outputs.
-	if !strings.Contains(jobBlock, "mode=pat") || !strings.Contains(jobBlock, "mode=no-pat") {
-		t.Errorf("propagate.yml: 'dogfood-bump' job is missing a PAT-resolution step emitting mode=pat / mode=no-pat.\n" +
-			"The push step must be gated on mode == 'pat' so the no-PAT case skips with a " +
-			"::warning:: instead of failing the job.")
+	// The dogfood-bump job must have its own auth resolution emitting the
+	// three modes (the consumer-matrix job has a separate Resolve auth
+	// token step). 'no-credentials' is the skip branch.
+	for _, want := range []string{`mode=app`, `mode=pat`, `mode=no-credentials`} {
+		if !strings.Contains(jobBlock, want) {
+			t.Errorf("propagate.yml: 'dogfood-bump' job is missing a `%s` auth-resolution branch.\n"+
+				"The push step must be gated on mode app/pat so the no-credential case skips with a "+
+				"::warning:: instead of failing the job.", want)
+		}
 	}
 
 	// The Open dogfood-bump PR step must be gated on mode == 'pat'.
@@ -1138,23 +1226,34 @@ func TestPropagateDogfoodBumpPRGatedOnPAT(t *testing.T) {
 	}
 	if prIf == "" {
 		t.Errorf("propagate.yml: 'Open dogfood-bump PR' step has no if: directive.\n" +
-			"It must gate on steps.auth.outputs.mode == 'pat' so the workflow-file " +
-			"push is only attempted with a PAT that has workflow scope.")
-	} else if !strings.Contains(prIf, "mode == 'pat'") {
-		t.Errorf("propagate.yml: 'Open dogfood-bump PR' if: line is `%s` but does not gate on mode == 'pat'.\n"+
-			"Without that gate, the push runs with GITHUB_TOKEN (which is policy-restricted "+
-			"from pushing .github/workflows/* changes) and fails. if: line was:\n%s", prIf, prIf)
+			"It must gate on mode app/pat so the workflow-file push is only attempted with a " +
+			"Workflows-granted credential (app token or PAT with workflow scope).")
+	} else {
+		for _, want := range []string{
+			`steps.auth.outputs.mode == 'app'`,
+			`steps.auth.outputs.mode == 'pat'`,
+		} {
+			if !strings.Contains(prIf, want) {
+				t.Errorf("propagate.yml: 'Open dogfood-bump PR' if: line is `%s` but does not gate on %s.\n"+
+					"Without that gate, the push runs with GITHUB_TOKEN (which is policy-restricted "+
+					"from pushing .github/workflows/* changes) and fails. if: line was:\n%s", prIf, want, prIf)
+			}
+		}
+	}
+	if !strings.Contains(prStep, `GH_TOKEN: ${{ steps.auth.outputs.token }}`) {
+		t.Errorf("propagate.yml: 'Open dogfood-bump PR' step does not read GH_TOKEN from steps.auth.outputs.token.\n" +
+			"A raw AI_WORKFLOWS_PAT reference resolves to an empty string when unset; the resolved " +
+			"token output is the only safe source.")
 	}
 
-	// The Skip dogfood-bump PR (no PAT) step must exist as the complement.
-	skipStep := stepBlock(body, "Skip dogfood-bump PR (no PAT)")
+	// The Skip dogfood-bump PR (no push token) step must exist as the complement.
+	skipStep := stepBlock(body, "Skip dogfood-bump PR (no push token)")
 	if skipStep == "" {
-		t.Error("propagate.yml: no 'Skip dogfood-bump PR (no PAT)' step found.\n" +
-			"This is the graceful-degradation branch: when AI_WORKFLOWS_PAT is not set, " +
+		t.Error("propagate.yml: no 'Skip dogfood-bump PR (no push token)' step found.\n" +
+			"This is the graceful-degradation branch: when no Workflows-granted credential is set, " +
 			"the push is skipped and this step emits a ::warning:: with the remediation.")
 	}
 }
-
 
 // TestPrReviewSkipsAutomationBots locks the caller-side skip filter for
 // automation-bot PR authors in pr-review.yml's review job.

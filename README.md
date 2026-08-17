@@ -564,18 +564,29 @@ non-obvious things had been silently breaking it for three consecutive
 releases (v0.2.2 / v0.2.3 / v0.2.4):
 
 1. **Empty `AI_WORKFLOWS_PAT`.** Cross-repo operations (checkout of a private
-   consumer, opening any cross-repo PR) require a PAT with `repo` + `workflow`
-   scope, stored as `AI_WORKFLOWS_PAT`. When that secret is unset, the
-   literal `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to an empty
-   string, and `actions/checkout` fails with a generic
-   `Input required and not supplied: token` — which looks like a workflow
-   bug, not a missing secret. The fix routes the token through a
-   `Resolve auth token` step that falls back to `GITHUB_TOKEN` when the PAT
-   is empty. The fallback is enough for public-consumer checkout + render +
-   diff, so an operator can at least see what WOULD change. The cross-repo
-   PR step is gated on `steps.auth.outputs.mode == 'pat'`; when the PAT is
-   absent, a dedicated `Skip sync PR (no PAT)` step emits a `::warning::`
-   with the exact remediation (set the secret and re-run).
+   consumer, opening any cross-repo PR) require a credential beyond
+   `GITHUB_TOKEN`. Auth is now a three-tier chain resolved per run:
+
+   | Tier | Credential | Secrets | Rotation |
+   |---|---|---|---|
+   | 1 (preferred) | GitHub App installation token (1h, minted per run by `actions/create-github-app-token`) | `AI_WORKFLOWS_APP_ID` + `AI_WORKFLOWS_APP_PRIVATE_KEY` | None — the private key never expires |
+   | 2 (legacy) | Classic PAT, `repo` + `workflow` scope | `AI_WORKFLOWS_PAT` | Manual, at the chosen expiry |
+   | 3 (fallback) | `GITHUB_TOKEN` | — (automatic) | — |
+
+   The App (org-level, installed on this repo + every consumer) needs
+   Contents RW, Pull requests RW, Workflows RW. It exists specifically so no
+   long-lived user PAT is required — GitHub has no API to create tokens, so
+   PAT "rotation" can't be automated; per-run 1h app tokens make the
+   question moot. Tiers 1 and 2 push workflow-file changes and open
+   cross-repo PRs; tier 3 only reads public consumers and skips every PR
+   step with a visible `::warning::`.
+
+   When no tier-1/2 credential resolves, the literal
+   `token: ${{ secrets.AI_WORKFLOWS_PAT }}` pattern would fail checkout with
+   a generic `Input required and not supplied: token` — which looks like a
+   workflow bug, not a missing secret. The fix routes every token consumer
+   (checkout, PR steps, the dogfood push) through the `Resolve auth*` steps'
+   `token` output.
 
 2. **Dogfood pin drift.** `propagate.yml`'s consumer matrix handles OTHER
    repos but historically did not bump THIS repo's own dogfood pins
