@@ -25,6 +25,7 @@ package workflows
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1068,6 +1069,32 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 	if !strings.Contains(bumpStep, "v[0-9]+") {
 		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept a vX.Y.Z tag pin.\n" +
 			"Consumers pinned by tag would not be discovered and the bump would no-op.")
+	}
+
+	// The discovery regex must also match HYPHENATED workflow filenames.
+	// \w excludes '-'; every consumer workflow file (pr-review, ai-comment,
+	// renovate-analysis, issue-opened) is hyphenated, so `\w+\.yml@` matched
+	// nothing, OLD_TAG came back empty, and the sed bump silently no-op'd —
+	// every propagate sync added only the config file and never bumped the
+	// consumer's uses: ref (the v0.2.12/13/14 syncs all shipped pins still
+	// at v0.2.11). Extract the regex and run it through real `grep -P` (the
+	// step's own engine) against the real shapes.
+	re := regexp.MustCompile(`grep -oP '([^']+)'`)
+	m := re.FindStringSubmatch(bumpStep)
+	if m == nil {
+		t.Fatalf("propagate.yml: 'Bump tag' step has no `grep -oP '...'` regex to test")
+	}
+	for _, fixture := range []string{
+		"uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.11",
+		"uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.11",
+		"uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@abcdef0123456789abcdef0123456789abcdef01",
+	} {
+		cmd := exec.Command("grep", "-oP", m[1])
+		cmd.Stdin = strings.NewReader(fixture)
+		out, err := cmd.Output()
+		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+			t.Errorf("propagate.yml: OLD_TAG regex %q does not match %q — the consumer pin bump would silently no-op (the v0.2.12/13/14 bug)", m[1], fixture)
+		}
 	}
 }
 
