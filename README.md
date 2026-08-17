@@ -594,10 +594,13 @@ releases (v0.2.2 / v0.2.3 / v0.2.4):
    They were stuck at v0.2.1 across v0.2.2 / v0.2.3 until PR #20 caught them
    up manually. A new `dogfood-bump` job now bumps them on every tag push and
    regenerates the rendered prompts (whose banner embeds the version), then
-   opens a self-PR for review. It runs entirely on the default `GITHUB_TOKEN`
-   (same-repo), so it works even when `AI_WORKFLOWS_PAT` is not set.
+   opens a self-PR for review. The push step is gated on a Workflows-granted
+   credential (tier 1 or 2 — the commit touches `.github/workflows/self-*.yml`,
+   which the `GITHUB_TOKEN` is policy-restricted from pushing); with no
+   tier-1/2 credential the job computes the bump locally and skips the
+   self-PR with a `::warning::`.
 
-The token-fallback, PAT-gated PR step, skip-step-with-warning, and
+The token-fallback, `app || pat`-gated PR steps, skip-step-with-warning, and
 dogfood-bump job are all locked by
 `tests/workflows/workflow_invariants_test.go::TestPropagate*`.
 
@@ -613,7 +616,7 @@ dogfood-bump job are all locked by
 | `Run OpenCode` fails at end-of-run push on **pr-review** | The push targets a `contents: read` token and gets rejected — but the review itself was already posted via `gh pr review` | By design — `Run OpenCode` has `continue-on-error: true` and the `Verify review submitted` step drives the job conclusion (see Lessons Learned #7) |
 | `review / review` fails: "no verdict delivered", log shows `git fetch origin --depth=20` + `could not read Username` ~3s after startup, on a **private** consumer | Consumer checkout lost its credential (`persist-credentials: false`, shipped v0.2.2–v0.2.10): opencode's startup branch fetch can't auth against a private remote and dies before the LLM runs | Already fixed in v0.2.11 — checkout keeps `persist-credentials: true`; pushes remain blocked by the `contents: read` token scope (see Lessons Learned #7) |
 | `fatal: No url found for submodule path '.ai-workflows' in .gitmodules` during cleanup | The pinned `.ai-workflows` checkout was swept into the consumer index as a gitlink by opencode's end-of-run `git add -A` | Already fixed in v0.2.4 — every reusable workflow writes `.ai-workflows/` to `.git/info/exclude` after the nested checkout (see Lessons Learned #8) |
-| `propagate.yml`: `Input required and not supplied: token` on `Checkout consumer` | `AI_WORKFLOWS_PAT` secret unset → `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to empty string → `actions/checkout` rejects it | Already fixed in v0.2.5 — token is resolved via a `Resolve auth token` step that falls back to `GITHUB_TOKEN` (see Lessons Learned #9). To enable cross-repo PRs, set `AI_WORKFLOWS_PAT` (PAT with `repo` + `workflow` scope) and re-run. |
+| `propagate.yml`: `Input required and not supplied: token` on `Checkout consumer` | `AI_WORKFLOWS_PAT` secret unset → `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to empty string → `actions/checkout` rejects it | Already fixed in v0.2.5 — token is resolved via a `Resolve auth token` step that falls back to `GITHUB_TOKEN` (see Lessons Learned #9). To enable cross-repo PRs, set the app secrets `AI_WORKFLOWS_APP_ID` + `AI_WORKFLOWS_APP_PRIVATE_KEY` (preferred — no rotation) or `AI_WORKFLOWS_PAT` (PAT with `repo` + `workflow` scope) and re-run. |
 | `propagate.yml`: dogfood pins (`self-pr-review.yml`, `self-ai-comment.yml`, `consumers/ai-workflows.yaml`) drift across releases | Pre-v0.2.5, `propagate.yml`'s matrix handled OTHER repos but not this repo's own dogfood pins | Already fixed in v0.2.5 — a new `dogfood-bump` job bumps them on every tag push and opens a self-PR (see Lessons Learned #9) |
 | Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
 | `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |

@@ -1298,6 +1298,67 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 // this filter can be relaxed — but the test stays as a regression guard
 // against accidentally removing the filter and breaking bot-authored PRs
 // across the consumer fleet again.
+// TestTestRouterPathsCoverGuardedTrees asserts test-router.yml's `paths:`
+// filters (both push and pull_request) include every tree the test suites
+// guard. Pre-fix, the filters listed only scripts/route-command.sh,
+// tests/**, and go.mod — so a PR touching ONLY a workflow file (e.g.
+// reverting the continue-on-error fix in pr-review.yml) skipped the `test`
+// job entirely and any tests/workflows invariant it violated merged
+// silently. The invariant suite is only as real as the CI trigger that
+// executes it. Round 3 of PR #41's review.
+func TestTestRouterPathsCoverGuardedTrees(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "test-router.yml")
+
+	// Extract the paths list under each trigger key. The workflow uses
+	// quoted single-path entries ('...') at six-space indentation under a
+	// four-space `paths:` key; collect entries per trigger block.
+	blocks := map[string][]string{}
+	current := ""
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "push:" || trimmed == "pull_request:":
+			current = trimmed
+		case current != "" && strings.HasPrefix(line, "      - '"):
+			entry := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(line), "- '"), "'")
+			blocks[current] = append(blocks[current], entry)
+		case current != "" && !strings.HasPrefix(line, "    "):
+			current = "" // left the trigger block
+		}
+	}
+	if len(blocks["push:"]) == 0 || len(blocks["pull_request:"]) == 0 {
+		t.Fatalf("test-router.yml: could not extract paths lists (push=%d, pull_request=%d entries) — workflow structure changed; update this test",
+			len(blocks["push:"]), len(blocks["pull_request:"]))
+	}
+
+	// Every guarded tree must appear in BOTH filters.
+	for _, want := range []string{
+		"scripts/route-command.sh", // router suite
+		"tests/**",                 // all suites incl. tests/workflows
+		"go.mod",                   // toolchain/dependency changes
+		".github/workflows/**",     // invariant suite's subject
+		"templates/**",             // aisync suite's subject
+		"consumers/**",             // aisync suite's subject
+	} {
+		for _, trigger := range []string{"push:", "pull_request:"} {
+			found := false
+			for _, p := range blocks[trigger] {
+				if p == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("test-router.yml: `%s` trigger's paths filter is missing %q.\n"+
+					"A PR touching only that tree would skip the `test` job, so any "+
+					"tests/workflows invariant it violates merges silently — the exact "+
+					"gap that let workflow-file changes ship without CI execution. "+
+					"%s filter entries: %v", trigger, want, trigger, blocks[trigger])
+			}
+		}
+	}
+}
+
 func TestPrReviewSkipsAutomationBots(t *testing.T) {
 	root := invRoot(t)
 	body := readWorkflowFile(t, root, "pr-review.yml")

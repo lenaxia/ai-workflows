@@ -375,9 +375,10 @@ jobs:
         # GITHUB_TOKEN otherwise). For public consumers the GITHUB_TOKEN
         # fallback is sufficient for read access; for private consumer
         # gokore, only a tier-1/2 credential (app token or PAT) works.
-        # continue-on-error so a failed private-repo checkout (no PAT) does
-        # not turn the whole matrix job red - the warning is emitted and the
-        # downstream PR step is skipped via the checkout_ok gate.
+        # continue-on-error so a failed private-repo checkout (no tier-1/2
+        # credential) does not turn the whole matrix job red - the warning
+        # is emitted and the downstream PR step is skipped via the
+        # checkout_ok gate.
         id: consumer_checkout
         if: steps.target.outputs.skip != 'true'
         continue-on-error: true

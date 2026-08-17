@@ -11,11 +11,17 @@ on:
       - 'scripts/route-command.sh'
       - 'tests/**'
       - 'go.mod'
+      - '.github/workflows/**'
+      - 'templates/**'
+      - 'consumers/**'
   pull_request:
     paths:
       - 'scripts/route-command.sh'
       - 'tests/**'
       - 'go.mod'
+      - '.github/workflows/**'
+      - 'templates/**'
+      - 'consumers/**'
 
 jobs:
   test:
