@@ -1337,6 +1337,7 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 		`"dependabot[bot]"`,
 		`"mergify[bot]"`,
 		`"github-merge-queue[bot]"`,
+		`"ai-workflows-propagation[bot]"`,
 	}
 	for _, bot := range requiredBots {
 		if !strings.Contains(ifLine, bot) {

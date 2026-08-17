@@ -22,8 +22,9 @@
 # The `uses:` ref MUST be a hardcoded tag (no vars context — see README
 # Lessons Learned #1). The reusable workflow at v0.2.9+ skips automation
 # bots (renovate, github-actions, release-please, dependabot, mergify,
-# github-merge-queue) at the job level, so callers do NOT need to add
-# their own `if:` filter for those — add one only for custom bots.
+# github-merge-queue, ai-workflows-propagation) at the job level, so
+# callers do NOT need to add their own `if:` filter for those — add one
+# only for custom bots.
 # `runs_on` defaults to ubuntu-latest; self-hosted consumers (e.g. gokore)
 # pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
 
@@ -59,7 +60,7 @@ jobs:
     #
     # To extend this list for your org's other bots, copy this `if:` block
     # into your caller workflow's job and add the bot username.
-    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) }}
+    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]","ai-workflows-propagation[bot]"]'), github.event.pull_request.user.login) }}
     concurrency:
       group: ai-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
