@@ -716,15 +716,28 @@ func TestPropagateHasAppTokenMintingSteps(t *testing.T) {
 	}
 	for _, want := range []string{
 		`actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1`,
-		`app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}`,
+		`client-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}`,
 		`private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}`,
 		`steps.appdetect.outputs.has_app == 'true'`,
 	} {
 		if !strings.Contains(mintStep, want) {
 			t.Errorf("propagate.yml: 'Generate app token' step is missing %q.\n"+
-				"This substring locks one of the app-token minting properties (pin, secret inputs, probe gate). "+
+				"This substring locks one of the app-token minting properties (pin, client-id/private-key inputs, probe gate). "+
 				"Step body was:\n%s", want, mintStep)
 		}
+	}
+
+	// The consumer-matrix mint MUST scope the token to the account's
+	// installation via `owner` — without it the action mints a token for the
+	// workflow's own repository ONLY, and every consumer push 403s (the
+	// validation run 32009801496 failure).
+	matrixJob := extractJobBlock(body, "propagate")
+	if !strings.Contains(matrixJob, "owner: ${{ github.repository_owner }}") {
+		t.Errorf("propagate.yml: consumer-matrix 'Generate app token' step is missing `owner: ${{ github.repository_owner }}`.\n" +
+			"Without owner, create-github-app-token scopes the token to ai-workflows only " +
+			"(its log: 'Creating token for this repository (lenaxia/ai-workflows)') and every " +
+			"consumer push fails with 403 Permission denied to the app bot — the exact " +
+			"validation-run failure this test locks.")
 	}
 
 	// Both jobs need the pair: count occurrences across the whole file.
