@@ -9,6 +9,12 @@
 # they are converged into templates incrementally.
 #
 # context.md is consumer-owned (100% per-repo).
+#
+# merge.md is consumer-owned too: LLMSafeSpaces has the head-SHA-pinned
+# /merge approval gate (the latest bot APPROVE must target the current head,
+# added in PR #914) that the generic template merge.md does not carry.
+# Rendering the template over it would silently drop that hardening — merge.md
+# stays in the forked list.
 
 name: llmsafespaces
 version: v0.1.0
@@ -28,6 +34,7 @@ forked:
   - help.md
   - implement.md
   - issue-responder.md
+  - merge.md
   - pr-review.md
   - renovate-analysis.md
   - security.md

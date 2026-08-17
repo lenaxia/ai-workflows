@@ -1595,3 +1595,27 @@ func TestStepIfDirectiveNegativeCase(t *testing.T) {
 		})
 	}
 }
+
+// TestLLMSafeSpacesForksMergeAndPrReview asserts the llmsafespaces consumer
+// config keeps its consumer-specific prompts in the `forked:` list. The
+// propagate render overwrites any prompt NOT listed as forked with the
+// generic template — LLMSafeSpaces' merge.md carries the head-SHA-pinned
+// /merge approval gate (PR #914) that the template does not, and its
+// pr-review.md carries the #790-gated verdict rules. Dropping either from the
+// forked list silently undoes that hardening on the next propagate render
+// (the v0.2.12 incident: merge.md was rendered-over and lost the head-SHA
+// bullet).
+func TestLLMSafeSpacesForksMergeAndPrReview(t *testing.T) {
+	root := invRoot(t)
+	b, err := os.ReadFile(filepath.Join(root, "consumers", "llmsafespaces.yaml"))
+	if err != nil {
+		t.Fatalf("read consumers/llmsafespaces.yaml: %v", err)
+	}
+	cfg := string(b)
+	for _, f := range []string{"merge.md", "pr-review.md", "renovate-analysis.md"} {
+		if !strings.Contains(cfg, "  - "+f) {
+			t.Errorf("consumers/llmsafespaces.yaml: %s is NOT in the `forked:` list — propagate will render "+
+				"the generic template over LLMSafeSpaces' consumer-specific content on the next sync", f)
+		}
+	}
+}
