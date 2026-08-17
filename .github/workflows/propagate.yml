@@ -92,7 +92,7 @@ jobs:
         if: steps.appdetect.outputs.has_app == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          client-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
           private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
 
       - name: Resolve auth (dogfood-bump)
@@ -308,14 +308,19 @@ jobs:
       - name: Generate app token
         # 1h installation token with Contents/PR/Workflows RW on every repo
         # the app is installed on (all consumers + this repo). Default
-        # installation scope - no owner/repositories inputs - because the
-        # consumer matrix needs different repos per leg.
+        # `owner` scopes the minted token to the account's installation,
+        # covering every repo the app is installed on (all consumers + this
+        # repo). Without owner/repositories the action scopes to ONLY the
+        # workflow's own repository (ai-workflows) — which made the first
+        # validation run 403 on every consumer push (run 32009801496).
+        # `client-id` is v3.x's rename of the legacy `app-id` input.
         if: steps.target.outputs.skip != 'true' && steps.appdetect.outputs.has_app == 'true'
         id: app_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
+          client-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
           private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
 
       - name: Resolve auth token
         # Cross-repo checkout + cross-repo PR both need a token with access
