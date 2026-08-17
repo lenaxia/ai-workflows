@@ -140,6 +140,36 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 	}
 }
 
+// prReviewCredentialDirectives extracts the two directive lines the
+// credential-safety argument depends on, ignoring comment text:
+//
+//   - the checkout step's `persist-credentials:` value (10-space indent,
+//     inside the step's `with:` block)
+//   - the review job's `contents: read` permission (6-space indent, a
+//     standalone line)
+//
+// Both are matched as whole directive lines, NOT substrings: the v0.2.2–
+// v0.2.10 pre-fix body carried a comment mentioning
+// "persist-credentials: true" (pointing at ai-comment.yml) directly above a
+// `persist-credentials: false` directive, and this PR's own checkout comment
+// mentions "contents: read" mid-prose — either satisfies a naive
+// strings.Contains. See the first review round on PR #40.
+//
+// Note: the contents assertion deliberately does NOT scope to
+// extractJobBlock(body, "review") — pr-review.yml's caller-contract comment
+// embeds a `#     review:` sketch whose trailing spaces satisfy the
+// `  review:` job-key header, so extractJobBlock would slice the wrong
+// region on the live file (it terminates at the real job key, before the
+// permissions block). A whole-body, line-anchored match is immune: comment
+// mentions carry a `#` or trailing prose and cannot match
+// `^ {6}contents: read[ \t]*$`.
+func prReviewCredentialDirectives(body string) (persistTrue, contentsRead bool) {
+	persistRe := regexp.MustCompile(`(?m)^ {10}persist-credentials: true[ \t]*$`)
+	contentsRe := regexp.MustCompile(`(?m)^ {6}contents: read[ \t]*$`)
+	coStep := stepBlock(body, "Checkout consumer repository")
+	return persistRe.MatchString(coStep), contentsRe.MatchString(body)
+}
+
 // TestPrReviewCheckoutPersistsCredentials asserts pr-review.yml's consumer
 // checkout keeps `persist-credentials: true`. v0.2.2 (a6b582b) flipped it to
 // false to express "this workflow only reviews, never pushes" — but the
@@ -156,14 +186,18 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 // scope (pushes get 403), NOT by removing the checkout credential. That also
 // means the failure this test guards can only reproduce on private
 // consumers — hence the structural lock rather than an integration test.
+// Both assertions are anchored to directive lines via
+// prReviewCredentialDirectives; TestPrReviewCheckoutCredentialNegativeCase
+// pins that the matcher rejects the pre-fix body, whose comments contained
+// the same literals.
 func TestPrReviewCheckoutPersistsCredentials(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
-	coStep := stepBlock(body, "Checkout consumer repository")
-	if coStep == "" {
+	if stepBlock(body, "Checkout consumer repository") == "" {
 		t.Fatal("pr-review.yml: no 'Checkout consumer repository' step found — workflow structure changed; update this test")
 	}
-	if !strings.Contains(coStep, "persist-credentials: true") {
-		t.Errorf("pr-review.yml: 'Checkout consumer repository' step is missing `persist-credentials: true`.\n"+
+	persistTrue, contentsRead := prReviewCredentialDirectives(body)
+	if !persistTrue {
+		t.Errorf("pr-review.yml: 'Checkout consumer repository' has no `persist-credentials: true` directive line.\n"+
 			"opencode's startup `git fetch origin --depth=20 <PR branch>` needs the "+
 			"credential on private consumers (gokore): anonymous fetch fails with "+
 			"`could not read Username` exit 128 and the run dies before the LLM executes — "+
@@ -173,12 +207,106 @@ func TestPrReviewCheckoutPersistsCredentials(t *testing.T) {
 	}
 	// And it must remain a read-only token: persisting credentials would
 	// otherwise grant push rights if contents were ever widened. Lock the
-	// permissions block shape the safety argument depends on.
-	if !strings.Contains(body, "contents: read") {
-		t.Errorf("pr-review.yml: job permissions no longer include `contents: read`.\n"+
+	// permissions-block shape the safety argument depends on.
+	if !contentsRead {
+		t.Errorf("pr-review.yml: review job's `permissions:` block has no `contents: read` directive line.\n"+
 			"The safety argument for persist-credentials: true (startup fetch works, "+
 			"end-of-run push 403s) depends on the read-only token scope. If push "+
 			"capability is ever needed here, re-evaluate this whole pattern.")
+	}
+}
+
+// TestPrReviewCheckoutCredentialNegativeCase is the hermetic counterpart to
+// TestPrReviewCheckoutPersistsCredentials (mirroring
+// TestPrReviewVerifyStepNegativeCase). The pre-fix fixture reproduces the
+// v0.2.2–v0.2.10 trap verbatim: a comment that MENTIONS
+// "persist-credentials: true" (pointing at ai-comment.yml) directly above a
+// `persist-credentials: false` directive, plus a `contents: write`
+// permission. The first review round on PR #40 proved a substring matcher
+// passes on that body; this test pins that the directive-anchored matcher
+// rejects it.
+func TestPrReviewCheckoutCredentialNegativeCase(t *testing.T) {
+	// Sanity-check the fixture really carries the trap: the misleading
+	// comment literal must be present, otherwise this test no longer
+	// exercises the false-pass it exists to pin.
+	const misleading = "which has persist-credentials: true +"
+
+	tests := []struct {
+		name     string
+		body     string
+		wantPass bool
+	}{
+		{
+			name: "pre-fix body: misleading comment + false directive + contents: write",
+			body: `
+  review:
+    permissions:
+      id-token: write
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          # persist-credentials: false — this workflow only REVIEWS code, it
+          # never pushes, matching issue-opened.yml. Consumers that need to
+          # push code use ai-comment.yml (/fix, /implement),
+          # which has persist-credentials: true + contents: write.
+          persist-credentials: false
+`,
+			wantPass: false,
+		},
+		{
+			name: "fixed body: true directive + contents: read (comment may mention either)",
+			body: `
+  review:
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          # the job token is scoped contents: read, so pushes still fail
+          persist-credentials: true
+`,
+			wantPass: true,
+		},
+		{
+			name: "directive missing entirely (only comment mention)",
+			body: `
+  review:
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout consumer repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          # consumers that push use ai-comment.yml (persist-credentials: true)
+`,
+			wantPass: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == tests[0].name && !strings.Contains(tc.body, misleading) {
+				t.Fatalf("fixture self-check failed: pre-fix body must contain the misleading literal %q", misleading)
+			}
+			persistTrue, contentsRead := prReviewCredentialDirectives(tc.body)
+			pass := persistTrue && contentsRead
+			if pass != tc.wantPass {
+				t.Errorf("expected wantPass=%v but got pass=%v (persistTrue=%v, contentsRead=%v)",
+					tc.wantPass, pass, persistTrue, contentsRead)
+			}
+		})
 	}
 }
 
