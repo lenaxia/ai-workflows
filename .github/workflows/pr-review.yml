@@ -162,15 +162,12 @@ jobs:
         # check. See issue #17 (Bug A).
         continue-on-error: true
 
-      - name: Verify review submitted
-        # Source of truth for the job's pass/fail: was a verdict (APPROVED or
-        # CHANGES_REQUESTED) by github-actions[bot] recorded against this PR's
-        # HEAD commit? If opencode crashed before delivering a verdict, this
-        # step fails the job even though the Run OpenCode step's own exit
-        # status was masked via continue-on-error above. Conversely, if
-        # opencode posted the verdict and then died on its end-of-run push,
-        # this step passes — which is the correct outcome: the review IS the
-        # deliverable, and it landed.
+      - name: Check verdict delivered
+        # First-pass gate: was a verdict (APPROVED or CHANGES_REQUESTED) by
+        # github-actions[bot] recorded against this PR's HEAD commit? Sets the
+        # `delivered` output for the salvage/retry steps below; the FINAL
+        # gate (Verify review submitted) is the job's source of truth.
+        id: check-verdict
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,11 +176,121 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\") and .commit_id == \"${PR_HEAD_SHA}\")] | length")"
+          # --paginate + per-page count aggregation: /pulls/N/reviews pages at
+          # 30, oldest first, so a busy PR with >30 reviews (or >30 stale
+          # reviews from prior commits) would hide the head-SHA verdict on a
+          # later page and false-negative here.
+          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
+            | awk '{s+=$1} END {print s+0}')"
+          if [ "${count}" -gt 0 ]; then
+            echo "delivered=true" >> "${GITHUB_OUTPUT}"
+            echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."
+          else
+            echo "delivered=false" >> "${GITHUB_OUTPUT}"
+            echo "No bot verdict against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — attempting salvage/retry."
+          fi
+
+      - name: Salvage dumped verdict
+        id: salvage
+        # When opencode ran but its verdict landed as a plain issue comment
+        # instead of an official review (the historical posting-failure
+        # class — PRs like LLMSafeSpaces#870 produced ~24 dumped verdicts),
+        # recover the review-shaped comment body (## Code Review + ###
+        # Verdict) into an OFFICIAL review pinned to the head SHA. The
+        # verdict is derived from the comment's ### Verdict section so the
+        # review carries the correct event (APPROVED/CHANGES_REQUESTED);
+        # unparseable verdicts and stale-SHA comments are NOT salvaged
+        # (posting a COMMENT-only review would not satisfy the final gate and
+        # would only add noise). Logic lives in scripts/salvage-verdict.sh
+        # (unit-tested in tests/gharouter).
+        #
+        # continue-on-error: a transient failure here (the GitHub API blip
+        # class the retry exists for) must NOT stop the job — the retry step
+        # below runs when salvaged != 'true' (the script emits salvaged=false
+        # up-front, so an unset output from a crashed step also proceeds).
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .ai-workflows/scripts/salvage-verdict.sh
+
+      - name: Run OpenCode (bounded retry)
+        # One retry of the LLM review when neither the first run nor the
+        # salvage produced a verdict (transient model/API failures — e.g. a
+        # provider 429 or a GitHub API blip killing the permission check).
+        # Bounded to exactly one extra attempt; if this also fails to
+        # deliver, a final salvage pass runs, then the verify gate fails the
+        # job visibly.
+        #
+        # Condition: delivered == 'false' AND salvage did not succeed.
+        # `!= 'true'` (rather than `== 'false'`) tolerates the unset output
+        # from a salvage step that crashed on a transient API failure, while
+        # the delivered=='false' guard still skips this when the verdict
+        # already landed (so a skipped/never-run salvage cannot re-run the
+        # LLM unnecessarily).
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: openai-compatible/default
+          use_github_token: "true"
+          share: "false"
+          prompt: ${{ env.OPENCODE_PROMPT }}
+        continue-on-error: true
+
+      - name: Salvage dumped verdict (after retry)
+        # The retry run can itself dump a review-shaped comment instead of
+        # creating an official review (the same failure class as the first
+        # run). Re-run salvage against the post-retry comment stream so the
+        # retry's verdict is not wasted.
+        #
+        # Gated on salvaged != 'true' as well: when the FIRST salvage
+        # succeeded, posting an official review does not remove the dumped
+        # comment, so an ungated run here would POST A DUPLICATE review.
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .ai-workflows/scripts/salvage-verdict.sh
+
+      - name: Verify review submitted
+        # Source of truth for the job's pass/fail: was a verdict (APPROVED or
+        # CHANGES_REQUESTED) by github-actions[bot] recorded against this PR's
+        # HEAD commit? If opencode crashed before delivering a verdict AND the
+        # salvage step had nothing to recover, this step fails the job even
+        # though the Run OpenCode steps' own exit status was masked via
+        # continue-on-error above. Conversely, if the verdict was posted
+        # (directly, salvaged, or retried) and opencode then died on its
+        # end-of-run push, this step passes — the correct outcome: the review
+        # IS the deliverable, and it landed.
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # --paginate + per-page count aggregation (see Check verdict
+          # delivered): a busy PR's head-SHA verdict can sit beyond page 1.
+          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
+            | awk '{s+=$1} END {print s+0}')"
           if [ "${count}" -eq 0 ]; then
             echo "ERROR: no APPROVED/CHANGES_REQUESTED review by github-actions[bot] against HEAD ${PR_HEAD_SHA} found on PR #${PR_NUMBER}." >&2
-            echo "The opencode run did not deliver a verdict. Failing the job." >&2
+            echo "The opencode run did not deliver a verdict (attempts: 1 run + 1 salvage + 1 retry). Failing the job." >&2
             exit 1
           fi
           echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."

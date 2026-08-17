@@ -1,6 +1,7 @@
-# Test router — runs the route-command.sh regression suite on every push/PR.
-# This is the safety net that makes centralizing route-command.sh safe: any
-# change to routing logic must pass these tests before it can reach consumers.
+# Test router — runs the script regression suites (route-command.sh,
+# salvage-verdict.sh) on every push/PR. This is the safety net that makes
+# centralizing the scripts safe: any change to routing or salvage logic must
+# pass these tests before it can reach consumers.
 
 name: Test Router
 
@@ -9,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/route-command.sh'
+      - 'scripts/salvage-verdict.sh'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'
@@ -17,6 +19,7 @@ on:
   pull_request:
     paths:
       - 'scripts/route-command.sh'
+      - 'scripts/salvage-verdict.sh'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'

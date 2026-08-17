@@ -1407,3 +1407,191 @@ func TestTestRouterPathsCoverGuardedTrees(t *testing.T) {
 		}
 	}
 }
+
+// TestPrReviewSalvageRetryFlowLocked asserts the salvage/retry design stays
+// coherent:
+//
+//   - The retry step ("Run OpenCode (bounded retry)") runs ONLY when the
+//     first check found no verdict (delivered == 'false') AND salvage did not
+//     succeed. The `!= 'true'` (not `== 'false'`) comparison is deliberate:
+//     a salvage step that crashed on a transient API failure leaves
+//     salvaged UNSET, and the retry must still proceed. This test fails if
+//     someone "simplifies" the condition to `== 'false'` (which would skip
+//     the retry on the exact transient-failure class it exists for) or drops
+//     the delivered guard (which would re-run the LLM on every successful
+//     review, doubling cost).
+//   - The salvage step must tolerate its own failure (continue-on-error) so
+//     a gh/API blip cannot fail the job outright — the retry owns the
+//     recovery.
+//   - The script emits salvaged=false up-front (before the POST), so an
+//     unset output from a crashed step still means "did not salvage".
+func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+
+	checkStep := stepBlock(body, "Check verdict delivered")
+	if checkStep == "" {
+		t.Fatal("pr-review.yml: no 'Check verdict delivered' step found — the salvage/retry flow requires it")
+	}
+	if !strings.Contains(checkStep, "delivered=false") {
+		t.Errorf("pr-review.yml: 'Check verdict delivered' must set delivered=false when no verdict is found")
+	}
+
+	salvageStep := stepBlock(body, "Salvage dumped verdict")
+	if salvageStep == "" {
+		t.Fatal("pr-review.yml: no 'Salvage dumped verdict' step found")
+	}
+	if !strings.Contains(salvageStep, "continue-on-error: true") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must tolerate its own failure (continue-on-error) so " +
+			"a transient gh/API blip cannot fail the job — the retry step owns the recovery")
+	}
+	if !strings.Contains(salvageStep, "delivered == 'false'") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must run only when delivered == 'false' " +
+			"(a delivered verdict needs no salvage)")
+	}
+	if !strings.Contains(salvageStep, "salvage-verdict.sh") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must invoke scripts/salvage-verdict.sh")
+	}
+
+	retryStep := stepBlock(body, "Run OpenCode (bounded retry)")
+	if retryStep == "" {
+		t.Fatal("pr-review.yml: no 'Run OpenCode (bounded retry)' step found")
+	}
+	// The retry condition is the security-critical guard. `!= 'true'`
+	// (rather than `== 'false'`) tolerates an unset output from a crashed
+	// salvage step; the delivered guard prevents a wasted LLM re-run when the
+	// verdict already landed.
+	if !strings.Contains(retryStep, `delivered == 'false'`) {
+		t.Errorf("pr-review.yml: retry step must gate on delivered == 'false' (skip when the verdict landed)")
+	}
+	if !strings.Contains(retryStep, `salvaged != 'true'`) {
+		t.Errorf("pr-review.yml: retry step must gate on salvaged != 'true' (NOT == 'false') so a salvage step " +
+			"that crashed on a transient API failure (leaving salvaged unset) still proceeds to the retry")
+	}
+
+	// C4: the post-retry salvage pass must ALSO gate on salvaged != 'true'.
+	// When the first salvage succeeds, posting an official review does not
+	// remove the dumped comment, so an ungated post-retry run would POST A
+	// DUPLICATE review on the salvage happy path. The check targets the step's
+	// `if:` directive line specifically (not the whole block — a comment
+	// mentioning the gate must not satisfy it).
+	postRetry := stepBlock(body, "Salvage dumped verdict (after retry)")
+	if postRetry == "" {
+		t.Fatal("pr-review.yml: no 'Salvage dumped verdict (after retry)' step found")
+	}
+	if got := stepIfDirective(postRetry); got == "" {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict (after retry)' has no `if:` directive")
+	} else {
+		if !strings.Contains(got, `delivered == 'false'`) {
+			t.Errorf("pr-review.yml: post-retry salvage if: must gate on delivered == 'false', got %q", got)
+		}
+		if !strings.Contains(got, `salvaged != 'true'`) {
+			t.Errorf("pr-review.yml: post-retry salvage if: must gate on salvaged != 'true' — otherwise a successful "+
+				"first salvage (which does not remove the dumped comment) triggers a DUPLICATE official review on "+
+				"every PR; got %q", got)
+		}
+	}
+}
+
+// stepIfDirective returns the step's `if:` directive line, or "" if none.
+// Skips comments, blank lines, and other leading directives (the step name,
+// id:, continue-on-error:, env:, uses:, run:) that may precede the if:.
+func stepIfDirective(block string) string {
+	for _, line := range strings.Split(strings.TrimPrefix(block, "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "", strings.HasPrefix(trimmed, "#"),
+			strings.HasPrefix(trimmed, "- name:"),
+			strings.HasPrefix(trimmed, "id:"),
+			strings.HasPrefix(trimmed, "continue-on-error:"),
+			strings.HasPrefix(trimmed, "env:"),
+			strings.HasPrefix(trimmed, "uses:"),
+			strings.HasPrefix(trimmed, "run:"),
+			strings.HasPrefix(trimmed, "with:"):
+			continue
+		case strings.HasPrefix(trimmed, "if:"):
+			return trimmed
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+// TestStepIfDirectiveNegativeCase locks stepIfDirective itself: a gate
+// expressed only in a comment (not the if: directive) must FAIL the matcher,
+// and a gate dropped from the if: line must FAIL. This mirrors the negative-
+// case fixtures of the other verify-step tests so a regression that re-
+// broadens the matcher to block-substring matching is caught.
+func TestStepIfDirectiveNegativeCase(t *testing.T) {
+	tests := []struct {
+		name        string
+		block       string
+		wantIf      bool
+		wantAny     string
+		wantMissing bool
+	}{
+		{
+			name: "gate only in comment, no if directive",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        # must gate on salvaged != 'true'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			wantIf:  false,
+			wantAny: "",
+		},
+		{
+			name: "if present but missing salvaged guard",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			// The matcher must REJECT this: the guard is absent. wantIf true
+			// asserts the directive is found; wantMissing asserts it lacks
+			// the salvaged guard.
+			wantIf:      true,
+			wantAny:     `salvaged != 'true'`,
+			wantMissing: true,
+		},
+		{
+			name: "correct gate present",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			wantIf:  true,
+			wantAny: `salvaged != 'true'`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			directive := stepIfDirective(tc.block)
+			if tc.wantIf {
+				if directive == "" {
+					t.Fatalf("expected an if: directive, got none")
+				}
+				if tc.wantMissing {
+					if strings.Contains(directive, tc.wantAny) {
+						t.Errorf("if: directive %q must NOT contain %q (this is the negative fixture)", directive, tc.wantAny)
+					}
+				} else if !strings.Contains(directive, tc.wantAny) {
+					t.Errorf("if: directive %q must contain %q", directive, tc.wantAny)
+				}
+			} else if directive != "" {
+				t.Errorf("expected no if: directive, got %q", directive)
+			}
+		})
+	}
+}
