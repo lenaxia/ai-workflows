@@ -176,8 +176,13 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\") and .commit_id == \"${PR_HEAD_SHA}\")] | length")"
+          # --paginate + per-page count aggregation: /pulls/N/reviews pages at
+          # 30, oldest first, so a busy PR with >30 reviews (or >30 stale
+          # reviews from prior commits) would hide the head-SHA verdict on a
+          # later page and false-negative here.
+          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
+            | awk '{s+=$1} END {print s+0}')"
           if [ "${count}" -gt 0 ]; then
             echo "delivered=true" >> "${GITHUB_OUTPUT}"
             echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."
@@ -245,11 +250,14 @@ jobs:
         # The retry run can itself dump a review-shaped comment instead of
         # creating an official review (the same failure class as the first
         # run). Re-run salvage against the post-retry comment stream so the
-        # retry's verdict is not wasted. Idempotent: posts nothing if the
-        # retry already delivered an official review or nothing new appeared.
+        # retry's verdict is not wasted.
+        #
+        # Gated on salvaged != 'true' as well: when the FIRST salvage
+        # succeeded, posting an official review does not remove the dumped
+        # comment, so an ungated run here would POST A DUPLICATE review.
         id: salvage-retry
         continue-on-error: true
-        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -275,8 +283,11 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
-            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\") and .commit_id == \"${PR_HEAD_SHA}\")] | length")"
+          # --paginate + per-page count aggregation (see Check verdict
+          # delivered): a busy PR's head-SHA verdict can sit beyond page 1.
+          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
+            | awk '{s+=$1} END {print s+0}')"
           if [ "${count}" -eq 0 ]; then
             echo "ERROR: no APPROVED/CHANGES_REQUESTED review by github-actions[bot] against HEAD ${PR_HEAD_SHA} found on PR #${PR_NUMBER}." >&2
             echo "The opencode run did not deliver a verdict (attempts: 1 run + 1 salvage + 1 retry). Failing the job." >&2

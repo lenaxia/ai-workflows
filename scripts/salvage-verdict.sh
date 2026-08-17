@@ -53,12 +53,13 @@ set -euo pipefail
 [ -n "${GITHUB_OUTPUT:-}" ] && echo "salvaged=false" >> "${GITHUB_OUTPUT}"
 
 # Newest review-shaped bot comment, aggregated across ALL paginated pages.
-# --paginate runs the jq program once PER PAGE and concatenates raw outputs,
-# so `last` on a single page would pick the OLDEST page's newest comment.
-# --slurp wraps every page into one outer array, making the flattened
-# selection globally newest.
+# gh's --paginate emits one JSON array per page; --slurp wraps them into one
+# outer array on stdout. gh REJECTS --slurp with --jq ("the `--slurp` option
+# is not supported with `--jq` or `--template`", verified on gh 2.97.0), so
+# the selection runs in an external jq -r pipe over the slurped pages. The
+# flattened selection is therefore globally newest, never per-page.
 body="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp \
-  --jq '[.[] | .[] | select(.user.login == "github-actions[bot]") | .body | select(test("## Code Review") and test("### Verdict"))] | last // empty')"
+  | jq -r '[.[] | .[] | select(.user.login == "github-actions[bot]") | .body | select(test("## Code Review") and test("### Verdict"))] | last // empty')"
 
 if [ -z "${body}" ]; then
   echo "No review-shaped comment to salvage."

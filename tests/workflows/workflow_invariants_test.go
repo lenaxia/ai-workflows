@@ -1467,4 +1467,51 @@ func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
 		t.Errorf("pr-review.yml: retry step must gate on salvaged != 'true' (NOT == 'false') so a salvage step " +
 			"that crashed on a transient API failure (leaving salvaged unset) still proceeds to the retry")
 	}
+
+	// C4: the post-retry salvage pass must ALSO gate on salvaged != 'true'.
+	// When the first salvage succeeds, posting an official review does not
+	// remove the dumped comment, so an ungated post-retry run would POST A
+	// DUPLICATE review on the salvage happy path. The check targets the step's
+	// `if:` directive line specifically (not the whole block — a comment
+	// mentioning the gate must not satisfy it).
+	postRetry := stepBlock(body, "Salvage dumped verdict (after retry)")
+	if postRetry == "" {
+		t.Fatal("pr-review.yml: no 'Salvage dumped verdict (after retry)' step found")
+	}
+	if got := stepIfDirective(postRetry); got == "" {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict (after retry)' has no `if:` directive")
+	} else {
+		if !strings.Contains(got, `delivered == 'false'`) {
+			t.Errorf("pr-review.yml: post-retry salvage if: must gate on delivered == 'false', got %q", got)
+		}
+		if !strings.Contains(got, `salvaged != 'true'`) {
+			t.Errorf("pr-review.yml: post-retry salvage if: must gate on salvaged != 'true' — otherwise a successful "+
+				"first salvage (which does not remove the dumped comment) triggers a DUPLICATE official review on "+
+				"every PR; got %q", got)
+		}
+	}
+}
+
+// stepIfDirective returns the step's `if:` directive line, or "" if none.
+// Skips comments, blank lines, and other leading directives (id:,
+// continue-on-error:, env:, uses:, run:) that may precede the if:.
+func stepIfDirective(block string) string {
+	for _, line := range strings.Split(strings.TrimPrefix(block, "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "", strings.HasPrefix(trimmed, "#"),
+			strings.HasPrefix(trimmed, "id:"),
+			strings.HasPrefix(trimmed, "continue-on-error:"),
+			strings.HasPrefix(trimmed, "env:"),
+			strings.HasPrefix(trimmed, "uses:"),
+			strings.HasPrefix(trimmed, "run:"),
+			strings.HasPrefix(trimmed, "with:"):
+			continue
+		case strings.HasPrefix(trimmed, "if:"):
+			return trimmed
+		default:
+			return ""
+		}
+	}
+	return ""
 }

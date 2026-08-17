@@ -137,19 +137,44 @@ case "$*" in
   *"/issues/"*"/comments"*)
     jqfilter=""
     slurp=0
-    prev=""
     for arg in "$@"; do
-      if [ "$prev" = "--jq" ]; then
-        jqfilter="$arg"
+      if [ "$arg" = "--jq" ]; then
+        jqfilter=1
       fi
-      if [ "$prev" = "--slurp" ]; then
+      if [ "$arg" = "--slurp" ]; then
         slurp=1
       fi
-      prev="$arg"
     done
+    # Extract the filter value following --jq if present.
+    if [ "$jqfilter" = "1" ]; then
+      jqfilter=""
+      prev=""
+      for arg in "$@"; do
+        if [ "$prev" = "--jq" ]; then
+          jqfilter="$arg"
+        fi
+        prev="$arg"
+      done
+    fi
+    if [ "$slurp" = "1" ] && [ -n "$jqfilter" ]; then
+      # Real gh 2.97.0 rejects --slurp with --jq:
+      #   the --slurp option is not supported with --jq or --template
+      # Mirror the usage error so a script that combines them fails here too.
+      echo "the --slurp option is not supported with --jq or --template" >&2
+      exit 1
+    fi
     if [ "$slurp" = "1" ]; then
-      # gh --paginate --slurp: jq input is the outer array of all pages.
-      printf '%%s' '[%[2]s]' | jq -r "$jqfilter"
+      # gh --paginate --slurp: stdout is the outer array of all pages; the
+      # script pipes it through external jq -r itself. Concatenate the page
+      # arrays (each is already JSON) inside one outer pair.
+      echo '['
+      first=1
+      for f in %[1]s/page*.json; do
+        [ "$first" -eq 1 ] || printf ','
+        cat "$f"
+        first=0
+      done
+      echo ']'
     else
       # Single page (no slurp): jq runs over the first page.
       jq -r "$jqfilter" %[1]s/page0.json
@@ -175,9 +200,18 @@ func (m *mockGH) loadPosted(t *testing.T) {
 	}
 }
 
+// path returns the mock gh executable path (for driving it directly).
+func (m *mockGH) path() string {
+	return filepath.Join(m.dir, "gh")
+}
+
 // runSalvage runs the script with the mock gh on PATH and returns its output.
+// runSalvage runs the script with the mock gh on PATH and returns its output
+// plus the salvaged value written to GITHUB_OUTPUT ("" if none was written).
 func runSalvage(t *testing.T, m *mockGH) (string, error) {
 	t.Helper()
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "github_output")
 	cmd := exec.Command(salvageScriptPath(t))
 	cmd.Env = append(os.Environ(),
 		"PATH="+m.dir+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -185,9 +219,37 @@ func runSalvage(t *testing.T, m *mockGH) (string, error) {
 		"PR_NUMBER=123",
 		"PR_HEAD_SHA=abcdef0123456789",
 		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+outFile,
 	)
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return string(out) + "\n" + readOutputFile(t, outFile), err
+}
+
+// readOutputFile reads the GITHUB_OUTPUT file the script appended to.
+func readOutputFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// salvagedValue extracts the LAST salvaged=... line from a GITHUB_OUTPUT
+// dump. The script writes salvaged=false up-front and flips to true only on a
+// successful POST, so the final value is the contract the workflow gates on.
+func salvagedValue(t *testing.T, out string) string {
+	t.Helper()
+	last := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "salvaged=") {
+			last = strings.TrimPrefix(line, "salvaged=")
+		}
+	}
+	if last == "" {
+		t.Fatalf("no salvaged= line in output:\n%s", out)
+	}
+	return last
 }
 
 // comment returns a JSON element for a bot comment with the given body.
@@ -377,4 +439,82 @@ func TestSalvage_NonBotCommentsIgnored(t *testing.T) {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
 	assertNothingPosted(t, m)
+}
+
+// TestSalvage_MockRejectsSlurpWithJq mirrors real gh 2.97.0's CLI contract:
+// `--slurp` combined with `--jq` is a hard usage error. The script must NOT
+// combine them (it pipes slurped pages through external jq instead), and
+// this mock-level rejection makes the fictional-gh regression impossible to
+// reintroduce silently.
+func TestSalvage_MockRejectsSlurpWithJq(t *testing.T) {
+	// The mock's comments branch, when asked for --slurp + --jq together,
+	// must fail exactly like real gh. Drive it directly: run the mock gh as a
+	// subprocess with those flags and assert the usage error + non-zero exit.
+	m := newMockGH(t, "[]")
+	cmd := exec.Command(m.path())
+	cmd.Args = []string{"gh", "api", "repos/lenaxia/test/issues/123/comments", "--paginate", "--slurp", "--jq", ".[]"}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("mock gh must reject --slurp + --jq like real gh 2.97.0; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "not supported with --jq") {
+		t.Fatalf("mock gh usage error must match real gh; got:\n%s", out)
+	}
+}
+
+// TestSalvage_FetchFailureEmitsSalvagedFalse asserts the up-front
+// salvaged=false write (R2): when the comments fetch fails (mock gh exits 1),
+// the script leaves salvaged=false in GITHUB_OUTPUT and posts nothing, so the
+// workflow's retry step (gated on salvaged != 'true') proceeds.
+func TestSalvage_FetchFailureEmitsSalvagedFalse(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "gh")
+	if err := os.WriteFile(bin, []byte("#!/usr/bin/env bash\necho 'boom' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(salvageScriptPath(t))
+	outFile := filepath.Join(dir, "github_output")
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPOSITORY=lenaxia/test",
+		"PR_NUMBER=123",
+		"PR_HEAD_SHA=abcdef0123456789",
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+outFile,
+	)
+	out, _ := cmd.CombinedOutput()
+	if got := salvagedValue(t, string(out)+"\n"+readOutputFile(t, outFile)); got != "false" {
+		t.Errorf("script must leave salvaged=false after a fetch failure, got %q", got)
+	}
+}
+
+// TestSalvage_EmitsSalvagedFalseOnRefusal extends the GITHUB_OUTPUT contract
+// to the stale-SHA refusal path: salvaged=false must be present so the retry
+// proceeds.
+func TestSalvage_EmitsSalvagedFalseOnRefusal(t *testing.T) {
+	dumped := "**Commit reviewed:** `0ldsha1234567890`\n## Code Review\n\n### Verdict\n**APPROVE** — old.\n"
+	m := newMockGH(t, "["+comment(dumped)+"]")
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
+	}
+	if got := salvagedValue(t, out); got != "false" {
+		t.Errorf("stale-SHA refusal must leave salvaged=false (retry proceeds), got %q", got)
+	}
+	assertNothingPosted(t, m)
+}
+
+// TestSalvage_EmitsSalvagedTrueOnSuccess extends the GITHUB_OUTPUT contract
+// to the success path: salvaged=true after a posted review.
+func TestSalvage_EmitsSalvagedTrueOnSuccess(t *testing.T) {
+	dumped := "## Code Review\n\n### Verdict\n**APPROVE** — ok.\n"
+	m := newMockGH(t, "["+comment(dumped)+"]")
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
+	}
+	if got := salvagedValue(t, out); got != "true" {
+		t.Errorf("successful salvage must set salvaged=true, got %q", got)
+	}
+	assertSalvagedTrue(t, out, m, "APPROVED")
 }
