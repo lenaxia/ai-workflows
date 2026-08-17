@@ -202,7 +202,8 @@ jobs:
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
           set -euo pipefail
-          # Configure git to push as the PAT-bearing identity (the default
+          # Configure git to push as the Workflows-granted-token identity
+          # (app installation token in tier 1, PAT in tier 2 — the default
           # checkout credential helper uses GITHUB_TOKEN, which the push
           # step would reject for the workflow-file policy).
           git config --global --replace-all \

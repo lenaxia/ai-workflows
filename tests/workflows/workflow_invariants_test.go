@@ -1194,8 +1194,10 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 			"makes GitHub Actions reject the whole workflow with a 'workflow file issue' " +
 			"startup failure. The dogfood-bump commit touches .github/workflows/self-*.yml, " +
 			"which the GITHUB_TOKEN is POLICY-restricted from pushing — no permissions key " +
-			"overrides this. The push must use AI_WORKFLOWS_PAT (see the Resolve auth token " +
-			"step + the mode == 'pat' gate on the Open dogfood-bump PR step).")
+			"overrides this. The push must use a Workflows-granted credential: the GitHub " +
+			"App token (set AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY, preferred) " +
+			"or AI_WORKFLOWS_PAT (see the Resolve auth (dogfood-bump) step + the " +
+			"mode == 'app' || mode == 'pat' gate on the Open dogfood-bump PR step).")
 	}
 
 	// The dogfood-bump job must have its own auth resolution emitting the
@@ -1209,7 +1211,7 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 		}
 	}
 
-	// The Open dogfood-bump PR step must be gated on mode == 'pat'.
+	// The Open dogfood-bump PR step must be gated on mode app/pat.
 	prStep := stepBlock(body, "Open dogfood-bump PR")
 	if prStep == "" {
 		t.Fatal("propagate.yml: no 'Open dogfood-bump PR' step found - workflow structure changed; update this test")
