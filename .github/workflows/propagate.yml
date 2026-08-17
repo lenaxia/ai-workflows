@@ -432,7 +432,7 @@ jobs:
           for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml .github/workflows/renovate-analysis.yml; do
             [ -f "$wf" ] || continue
             # Match either a SHA pin (40 hex) or a vX.Y.Z tag pin after '@'.
-            OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/\w+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
+            OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/[\w-]+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
             [ -n "$OLD_TAG" ] && break
           done
           echo "Bumping ${OLD_TAG:-<none>} -> ${NEW_TAG} in ${{ matrix.consumer }}"
