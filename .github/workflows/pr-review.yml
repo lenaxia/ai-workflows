@@ -73,12 +73,19 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-          # persist-credentials: false — this workflow only REVIEWS code, it
-          # never pushes, matching issue-opened.yml (see README Lessons
-          # Learned #6). Consumers that need to push code use ai-comment.yml
-          # (/fix, /implement), which has persist-credentials: true +
-          # contents: write.
-          persist-credentials: false
+          # persist-credentials: true — REQUIRED even though this workflow
+          # never pushes code. The opencode action runs
+          # `git fetch origin --depth=20 <PR branch>` at STARTUP, before any
+          # review work; on PRIVATE consumers (gokore) an anonymous fetch
+          # fails with `could not read Username` (exit 128) and the run dies
+          # before the LLM ever executes (the v0.2.2–v0.2.10 regression —
+          # every gokore `review / review` red; public consumers were immune
+          # because anonymous reads are allowed there). The persisted
+          # credential is safe: the job token is scoped contents: read, so
+          # opencode's end-of-run snapshot push still fails — the tolerated
+          # failure the Verify step below was built for. Reviews-only is
+          # enforced by token scope, not by removing the credential.
+          persist-credentials: true
 
       - name: Checkout ai-workflows (pinned)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -144,15 +151,15 @@ jobs:
           share: "false"
           prompt: ${{ env.OPENCODE_PROMPT }}
         # opencode unconditionally runs a `git push` at end-of-run to persist
-        # its session/snapshot branch. Under persist-credentials: false (this
-        # workflow only REVIEWS code, never pushes it), the push dies with
-        # `fatal: could not read Username for 'https://github.com'` and
-        # opencode exits 1 — marking the job FAILED even though the review
-        # itself was posted successfully via `gh pr review`. The verify step
-        # below is now the source of truth for the job conclusion; we
-        # tolerate opencode's exit status here so the snapshot-push failure
-        # stops poisoning every approved PR's required check. See issue #17
-        # (Bug A).
+        # its session/snapshot branch. The consumer checkout persists a
+        # contents: read credential (required for the startup branch fetch on
+        # private consumers — see the checkout step above), so this push dies
+        # with HTTP 403 and opencode exits 1 — marking the job FAILED even
+        # though the review itself was posted successfully via
+        # `gh pr review`. The verify step below is the source of truth for
+        # the job conclusion; we tolerate opencode's exit status here so the
+        # snapshot-push failure stops poisoning every approved PR's required
+        # check. See issue #17 (Bug A).
         continue-on-error: true
 
       - name: Verify review submitted

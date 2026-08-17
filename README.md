@@ -504,12 +504,23 @@ The `Run OpenCode` step in `pr-review.yml` has `continue-on-error: true`, and a
 follow-up `Verify review submitted` step is the source of truth for the job's
 pass/fail. This is necessary because `anomalyco/opencode` runs an unconditional
 `git push` at end-of-run (to persist its session/snapshot branch); under
-`pr-review.yml`'s required `persist-credentials: false` (the workflow only
-**reviews** code, never pushes it), that push dies with
-`fatal: could not read Username for 'https://github.com'` and opencode exits 1.
-Without `continue-on-error`, every legitimately-approved consumer PR showed a
-permanently red `review / review` required check even though
-`gh pr review --approve` had already succeeded.
+`pr-review.yml`'s read-only job token (`contents: read`), that push dies with
+HTTP 403 and opencode exits 1. Without `continue-on-error`, every
+legitimately-approved consumer PR showed a permanently red `review / review`
+required check even though `gh pr review --approve` had already succeeded.
+
+The consumer checkout must keep `persist-credentials: true` despite the
+reviews-only intent. v0.2.2–v0.2.10 shipped `persist-credentials: false`
+("this workflow only reviews, never pushes") — but opencode runs
+`git fetch origin --depth=20 <PR branch>` at **startup**, before any review
+work, and on a **private** consumer (gokore is the only one) an anonymous
+fetch fails with `fatal: could not read Username` (exit 128). The run died
+~3s in — before the LLM executed — and `Verify review submitted` correctly
+failed the job ("no verdict delivered"). Public consumers were immune
+(anonymous reads are allowed), which is why the regression hid for two weeks
+and looked like flaky infra. Persisting the credential is safe: the job token
+is `contents: read`, so pushes still fail (403) — reviews-only is enforced by
+token scope, not by removing the credential.
 
 The verify step queries `gh api .../pulls/N/reviews` for an `APPROVED` or
 `CHANGES_REQUESTED` verdict by `github-actions[bot]` pinned to the PR HEAD's
@@ -588,7 +599,8 @@ dogfood-bump job are all locked by
 | `startup_failure` only on one repo, same org | That repo's default workflow permissions are read-only | Add explicit `permissions:` to the caller (or set repo default to read-write) |
 | `Run OpenCode` fails: `empty ident name` | Self-hosted runner lacks git identity | Already fixed in v0.1.2 (all reusable workflows set git identity) |
 | `Run OpenCode` fails: `could not read Username` on **issue-opened** | `issue-opened.yml` has `contents: read` — opencode's end-of-run push has no creds (and rarely, the AI also tries to push) | Expected; use `/implement` or `/fix` for code changes (see Lessons Learned #6) |
-| `Run OpenCode` fails: `could not read Username` on **pr-review** | Same end-of-run push failure, but the review itself was already posted via `gh pr review` | Already fixed in v0.2.4 — `Run OpenCode` has `continue-on-error: true` and the `Verify review submitted` step drives the job conclusion (see Lessons Learned #7). The bot comment opencode leaves on the PR ("`fatal: could not read Username...`") is cosmetic noise from opencode echoing the push failure as a comment and can be ignored. |
+| `Run OpenCode` fails at end-of-run push on **pr-review** | The push targets a `contents: read` token and gets rejected — but the review itself was already posted via `gh pr review` | By design — `Run OpenCode` has `continue-on-error: true` and the `Verify review submitted` step drives the job conclusion (see Lessons Learned #7) |
+| `review / review` fails: "no verdict delivered", log shows `git fetch origin --depth=20` + `could not read Username` ~3s after startup, on a **private** consumer | Consumer checkout lost its credential (`persist-credentials: false`, shipped v0.2.2–v0.2.10): opencode's startup branch fetch can't auth against a private remote and dies before the LLM runs | Already fixed in v0.2.11 — checkout keeps `persist-credentials: true`; pushes remain blocked by the `contents: read` token scope (see Lessons Learned #7) |
 | `fatal: No url found for submodule path '.ai-workflows' in .gitmodules` during cleanup | The pinned `.ai-workflows` checkout was swept into the consumer index as a gitlink by opencode's end-of-run `git add -A` | Already fixed in v0.2.4 — every reusable workflow writes `.ai-workflows/` to `.git/info/exclude` after the nested checkout (see Lessons Learned #8) |
 | `propagate.yml`: `Input required and not supplied: token` on `Checkout consumer` | `AI_WORKFLOWS_PAT` secret unset → `token: ${{ secrets.AI_WORKFLOWS_PAT }}` resolves to empty string → `actions/checkout` rejects it | Already fixed in v0.2.5 — token is resolved via a `Resolve auth token` step that falls back to `GITHUB_TOKEN` (see Lessons Learned #9). To enable cross-repo PRs, set `AI_WORKFLOWS_PAT` (PAT with `repo` + `workflow` scope) and re-run. |
 | `propagate.yml`: dogfood pins (`self-pr-review.yml`, `self-ai-comment.yml`, `consumers/ai-workflows.yaml`) drift across releases | Pre-v0.2.5, `propagate.yml`'s matrix handled OTHER repos but not this repo's own dogfood pins | Already fixed in v0.2.5 — a new `dogfood-bump` job bumps them on every tag push and opens a self-PR (see Lessons Learned #9) |
