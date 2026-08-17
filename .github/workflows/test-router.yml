@@ -9,7 +9,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/**'
+      - 'scripts/route-command.sh'
+      - 'scripts/salvage-verdict.sh'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'
@@ -17,7 +18,8 @@ on:
       - 'consumers/**'
   pull_request:
     paths:
-      - 'scripts/**'
+      - 'scripts/route-command.sh'
+      - 'scripts/salvage-verdict.sh'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'
