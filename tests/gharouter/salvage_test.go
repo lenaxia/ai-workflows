@@ -77,10 +77,8 @@ func decodeB64(s string) ([]byte, error) {
 // mockGH is a fake `gh` executable. It records the review payload the script
 // submits and returns canned comment-page JSON the script reads.
 type mockGH struct {
-	dir     string
-	pages   []string // one raw JSON array per "page" of /issues/N/comments
-	reviews string   // raw JSON array served for /pulls/N/reviews (GET)
-	posted  []reviewPayload
+	dir    string
+	posted []reviewPayload
 }
 
 // newMockGH creates a mock gh whose /issues/N/comments call serves the given
@@ -210,7 +208,7 @@ esac
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
-	m := &mockGH{dir: dir, pages: pages, reviews: reviews}
+	m := &mockGH{dir: dir}
 	return m
 }
 
