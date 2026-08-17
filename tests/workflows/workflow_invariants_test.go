@@ -5,10 +5,11 @@
 // These tests lock in the fixes for issue #17:
 //
 //   - pr-review.yml must tolerate opencode's end-of-run push failure (which
-//     always happens under persist-credentials: false) and gate the job's
-//     conclusion on whether a verdict was actually posted — not on
-//     opencode's exit status. Without this, every legitimately-approved
-//     consumer PR shows a permanently red `review / review` required check.
+//     always happens: the job token is contents: read, so the push gets
+//     HTTP 403) and gate the job's conclusion on whether a verdict was
+//     actually posted — not on opencode's exit status. Without this, every
+//     legitimately-approved consumer PR shows a permanently red
+//     `review / review` required check.
 //
 //   - Every reusable workflow that does a nested `path: .ai-workflows`
 //     checkout must keep that checkout out of the consumer repo's git
@@ -84,8 +85,9 @@ func stepBlock(body, name string) string {
 // halves of the issue #17 Bug A fix:
 //
 //  1. The Run OpenCode step has `continue-on-error: true` so its
-//     unconditional end-of-run `git push` (which always fails under
-//     persist-credentials: false) does not mark the job FAILED.
+//     unconditional end-of-run `git push` (which always fails: the job
+//     token is contents: read and gets HTTP 403) does not mark the job
+//     FAILED.
 //  2. A subsequent verify step, gated on `if: always()`, queries the PR
 //     reviews API and fails the job iff no APPROVED/CHANGES_REQUESTED
 //     verdict by github-actions[bot] was posted against the PR HEAD.
@@ -103,9 +105,9 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 	}
 	if !strings.Contains(runStep, "continue-on-error: true") {
 		t.Errorf("pr-review.yml: 'Run OpenCode' step is missing `continue-on-error: true`.\n"+
-			"opencode unconditionally runs `git push` at end-of-run; under "+
-			"persist-credentials: false that push dies with `could not read "+
-			"Username` and opencode exits 1, marking the job FAILED even when "+
+			"opencode unconditionally runs `git push` at end-of-run; under the "+
+			"read-only job token (contents: read) that push dies with HTTP 403 "+
+			"and opencode exits 1, marking the job FAILED even when "+
 			"the review was posted successfully. See issue #17 Bug A.")
 	}
 
@@ -135,6 +137,48 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 				"the source of truth for the job conclusion. See issue #17 Bug A.\n"+
 				"Step body was:\n%s", want, verifyStep)
 		}
+	}
+}
+
+// TestPrReviewCheckoutPersistsCredentials asserts pr-review.yml's consumer
+// checkout keeps `persist-credentials: true`. v0.2.2 (a6b582b) flipped it to
+// false to express "this workflow only reviews, never pushes" — but the
+// opencode action runs `git fetch origin --depth=20 <PR branch>` at STARTUP,
+// before any review work, and on a PRIVATE consumer (gokore is the only one)
+// an anonymous fetch fails with `could not read Username` (exit 128). Every
+// gokore `review / review` run failed identically from Aug 10 through Aug 17
+// (goKore PR #363 being the visible case): the run died ~3s in, before the
+// LLM executed, and the Verify step correctly reported "no verdict
+// delivered". Public consumers were immune (anonymous reads are allowed),
+// which is why the regression shipped unnoticed across v0.2.2–v0.2.10.
+//
+// The reviews-only invariant is enforced by the job token's contents: read
+// scope (pushes get 403), NOT by removing the checkout credential. That also
+// means the failure this test guards can only reproduce on private
+// consumers — hence the structural lock rather than an integration test.
+func TestPrReviewCheckoutPersistsCredentials(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+	coStep := stepBlock(body, "Checkout consumer repository")
+	if coStep == "" {
+		t.Fatal("pr-review.yml: no 'Checkout consumer repository' step found — workflow structure changed; update this test")
+	}
+	if !strings.Contains(coStep, "persist-credentials: true") {
+		t.Errorf("pr-review.yml: 'Checkout consumer repository' step is missing `persist-credentials: true`.\n"+
+			"opencode's startup `git fetch origin --depth=20 <PR branch>` needs the "+
+			"credential on private consumers (gokore): anonymous fetch fails with "+
+			"`could not read Username` exit 128 and the run dies before the LLM executes — "+
+			"the v0.2.2–v0.2.10 regression that red-lit every gokore review. "+
+			"Reviews-only is enforced by the contents: read job token (pushes 403), "+
+			"not by dropping the credential. See README Lessons Learned #7.")
+	}
+	// And it must remain a read-only token: persisting credentials would
+	// otherwise grant push rights if contents were ever widened. Lock the
+	// permissions block shape the safety argument depends on.
+	if !strings.Contains(body, "contents: read") {
+		t.Errorf("pr-review.yml: job permissions no longer include `contents: read`.\n"+
+			"The safety argument for persist-credentials: true (startup fetch works, "+
+			"end-of-run push 403s) depends on the read-only token scope. If push "+
+			"capability is ever needed here, re-evaluate this whole pattern.")
 	}
 }
 
