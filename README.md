@@ -529,6 +529,31 @@ fails the job (real failure mode preserved). If opencode posted the verdict and
 then died on its end-of-run push, the verify step passes — which is the
 correct outcome: the review IS the deliverable, and it landed. See issue #17.
 
+### 7a. Verdict salvage + bounded retry
+
+A verdict can also be lost a second way: opencode runs and completes its
+review, but the model posts the review-shaped body (`## Code Review` …
+`### Verdict` …) as a **plain issue comment** instead of creating an official
+review via the reviews API (the historical failure class — e.g.
+LLMSafeSpaces#870 produced ~24 dumped verdicts with no official review on
+record, starving the `/merge` gate). Before failing, the workflow now:
+
+1. **Salvages** (`scripts/salvage-verdict.sh`): finds the newest review-shaped
+   bot comment, derives the verdict (`APPROVE` → `APPROVED`,
+   `REQUEST CHANGES` → `CHANGES_REQUESTED`), strips any stale
+   `**Commit reviewed:**` line, and re-posts the body as an **official**
+   review pinned to the head SHA. Unparseable verdicts and human comments are
+   never salvaged.
+2. **Retries** (bounded): if salvage found nothing, `Run OpenCode` executes
+   once more (transient model/API failures — provider 429, GitHub API blips).
+   The final `Verify review submitted` step remains the job's source of
+   truth and fails if neither the run, the salvage, nor the retry delivered a
+   verdict — a red check that now surfaces the failure instead of silently
+   producing no review.
+
+Salvage logic is unit-tested in `tests/gharouter/salvage_test.go` against a
+mock `gh` binary.
+
 This pattern does **not** apply to `issue-opened.yml`: that workflow's
 deliverable is a comment, not a review, so there is no equivalent single event
 to gate on; the `failure` conclusion there remains expected (see #6 above).
