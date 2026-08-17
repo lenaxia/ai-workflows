@@ -1069,6 +1069,23 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept a vX.Y.Z tag pin.\n" +
 			"Consumers pinned by tag would not be discovered and the bump would no-op.")
 	}
+	// The filename class in the discovery regex must include hyphens. All
+	// consumer workflow files are hyphenated (ai-comment.yml, pr-review.yml,
+	// issue-opened.yml, renovate-analysis.yml) and \w excludes '-', so a
+	// `\w+\.yml@` regex matches only the tail after the first hyphen —
+	// which never follows the literal `.github/workflows/` prefix — leaving
+	// OLD_TAG empty for EVERY consumer and the bump silently no-op'ing.
+	// This is exactly what the app-auth validation run (32011009853)
+	// exposed: `Bumping <none> -> v0.2.11` in every leg, with no pin
+	// changes in any sync PR. Git history confirms propagate never auto-
+	// bumped a consumer pin; all past bumps were manual.
+	if !strings.Contains(bumpStep, `[\w-]+\.yml@`) {
+		t.Errorf("propagate.yml: 'Bump tag' step's OLD_TAG regex does not accept hyphenated workflow filenames.\n"+
+			"Expected a `[\\w-]+\\.yml@` class (or equivalent). The pre-fix `\\w+\\.yml@` excludes '-', so "+
+			"ai-comment.yml/pr-review.yml/issue-opened.yml/renovate-analysis.yml were never discovered "+
+			"and OLD_TAG always came back empty - the bump no-op'd for every consumer (validation run "+
+			"32011009853: 'Bumping <none> -> v0.2.11').\nStep body was:\n%s", bumpStep)
+	}
 }
 
 // TestPropagateWarningsHaveNoDoubleV asserts no ::warning:: or ::error::
