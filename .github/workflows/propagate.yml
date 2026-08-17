@@ -96,11 +96,12 @@ jobs:
         # The dogfood-bump commit modifies .github/workflows/self-*.yml
         # (the dogfood pin sites). The GITHUB_TOKEN CANNOT push commits
         # that touch .github/workflows/* - this is a policy-level
-        # restriction on all GitHub-App-backed tokens, NOT a scope issue,
-        # so no `permissions:` key can override it. Only a credential with
-        # the Workflows grant can push such a commit: the GitHub App token
-        # (tier 1) or AI_WORKFLOWS_PAT (tier 2). When neither is available,
-        # the push step below is skipped with a ::warning::.
+        # restriction on any token lacking the Workflows grant (always
+        # including GITHUB_TOKEN), NOT a scope issue, so no
+        # `permissions:` key can override it. Only a credential with the
+        # Workflows grant can push such a commit: the GitHub App token
+        # (tier 1) or AI_WORKFLOWS_PAT (tier 2). When neither is
+        # available, the push step below is skipped with a ::warning::.
         id: auth
         env:
           APP_TOKEN: ${{ steps.app_token.outputs.token }}
@@ -249,7 +250,7 @@ jobs:
         env:
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
-          echo "::warning::AI_WORKFLOWS_PAT is not set - computed the ${NEW_TAG} dogfood-bump (see the Bump dogfood pins + Regenerate rendered prompts step diffs above) but CANNOT push it. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no permissions: key overrides this). Set AI_WORKFLOWS_PAT (PAT with repo + workflow scope) and re-run, or apply the bump manually (see PR #20 for the exact process: sed + ai-sync render + commit + push + PR)."
+          echo "::warning::No push credential available (GitHub App secrets AI_WORKFLOWS_APP_ID/AI_WORKFLOWS_APP_PRIVATE_KEY unset and AI_WORKFLOWS_PAT unset) - computed the ${NEW_TAG} dogfood-bump (see the Bump dogfood pins + Regenerate rendered prompts step diffs above) but CANNOT push it. The commit modifies .github/workflows/self-*.yml, which the GITHUB_TOKEN is policy-restricted from pushing (no permissions: key overrides this). Set the app secrets (preferred - no rotation) or AI_WORKFLOWS_PAT and re-run, or apply the bump manually (see PR #20 for the exact process: sed + ai-sync render + commit + push + PR)."
 
       - name: Warn on test failure
         if: steps.changes.outputs.changed == 'true' && steps.tests.outcome != 'success'
@@ -369,9 +370,10 @@ jobs:
         run: go build -o /tmp/ai-sync ./scripts/ai-sync
 
       - name: Checkout consumer
-        # Uses the resolved token (PAT if available, GITHUB_TOKEN otherwise).
-        # For public consumers the GITHUB_TOKEN fallback is sufficient for
-        # read access; for private consumer gokore, only the PAT works.
+        # Uses the resolved token (app token or PAT if available,
+        # GITHUB_TOKEN otherwise). For public consumers the GITHUB_TOKEN
+        # fallback is sufficient for read access; for private consumer
+        # gokore, only a tier-1/2 credential (app token or PAT) works.
         # continue-on-error so a failed private-repo checkout (no PAT) does
         # not turn the whole matrix job red - the warning is emitted and the
         # downstream PR step is skipped via the checkout_ok gate.
@@ -392,7 +394,7 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Checkout of ${{ matrix.consumer }} failed (likely private repo without AI_WORKFLOWS_PAT, or token has insufficient scope). Skipping render/bump/PR for this consumer."
+            echo "::warning::Checkout of ${{ matrix.consumer }} failed (likely a private repo with no tier-1/2 credential resolved, or the app/PAT lacks access to this repo - e.g. the GitHub App is not installed on it). Skipping render/bump/PR for this consumer."
           fi
 
       - name: Render into consumer

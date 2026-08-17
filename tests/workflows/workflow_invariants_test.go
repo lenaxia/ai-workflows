@@ -1161,9 +1161,10 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 // its push/PR step on a Workflows-granted credential being available. The
 // job's commit modifies .github/workflows/self-*.yml (the dogfood pin
 // sites); the GITHUB_TOKEN is POLICY-restricted from pushing workflow-file
-// changes (no `permissions:` key overrides this — it's a GitHub-App-token-level
-// restriction, not a scope issue), so only the GitHub App token (Workflows
-// RW) or a PAT with `workflow` scope can push it.
+// changes (no `permissions:` key overrides this — it's a restriction on any
+// token lacking the Workflows grant, always including GITHUB_TOKEN, not a
+// scope issue), so only the GitHub App token (Workflows RW) or a PAT with
+// `workflow` scope can push it.
 //
 // An earlier iteration of this fix tried to declare `workflows: write` in
 // the job's permissions block. That key does not exist in the GITHUB_TOKEN
@@ -1246,12 +1247,32 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 			"token output is the only safe source.")
 	}
 
-	// The Skip dogfood-bump PR (no push token) step must exist as the complement.
+	// The Skip dogfood-bump PR (no push token) step must exist as the
+	// complement, and its warning must name BOTH remediation paths (app
+	// secrets preferred, PAT legacy) — the step fires only when both tiers
+	// are unset, so a PAT-only warning misstates the condition and hides
+	// the preferred fix. This body lock mirrors
+	// TestPropagateHasSkipStepForMissingCredentials for the consumer
+	// matrix; round 1 of this PR's review caught the stale warning that
+	// had shipped with the renamed step.
 	skipStep := stepBlock(body, "Skip dogfood-bump PR (no push token)")
 	if skipStep == "" {
-		t.Error("propagate.yml: no 'Skip dogfood-bump PR (no push token)' step found.\n" +
+		t.Fatal("propagate.yml: no 'Skip dogfood-bump PR (no push token)' step found.\n" +
 			"This is the graceful-degradation branch: when no Workflows-granted credential is set, " +
 			"the push is skipped and this step emits a ::warning:: with the remediation.")
+	}
+	for _, want := range []string{
+		`::warning::`,
+		`AI_WORKFLOWS_APP_ID`,
+		`AI_WORKFLOWS_APP_PRIVATE_KEY`,
+		`AI_WORKFLOWS_PAT`,
+	} {
+		if !strings.Contains(skipStep, want) {
+			t.Errorf("propagate.yml: 'Skip dogfood-bump PR (no push token)' step is missing %q.\n"+
+				"The step fires only when BOTH the app secrets and the PAT are unset, so its "+
+				"warning must name both remediation paths (app secrets preferred, PAT legacy). "+
+				"Step body was:\n%s", want, skipStep)
+		}
 	}
 }
 
