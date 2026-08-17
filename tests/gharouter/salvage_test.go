@@ -77,62 +77,85 @@ func decodeB64(s string) ([]byte, error) {
 // mockGH is a fake `gh` executable. It records the review payload the script
 // submits and returns canned comment-page JSON the script reads.
 type mockGH struct {
-	dir    string
-	pages  []string // one raw JSON array per "page" of /issues/N/comments
-	posted []reviewPayload
+	dir     string
+	pages   []string // one raw JSON array per "page" of /issues/N/comments
+	reviews string   // raw JSON array served for /pulls/N/reviews (GET)
+	posted  []reviewPayload
 }
 
 // newMockGH creates a mock gh whose /issues/N/comments call serves the given
-// comment pages (one per pagination round). The script uses
-// `--paginate --slurp`, so the mock wraps all pages into one outer array
-// before applying the requested jq filter, mirroring real gh's --slurp.
-func newMockGH(t *testing.T, pages ...string) *mockGH {
+// comment pages (one per pagination round) and whose /pulls/N/reviews GET
+// serves the given reviews array (default: none — no official verdict on
+// record). The script uses `--paginate --slurp`, so the mock wraps all pages
+// into one outer array before emitting, mirroring real gh's --slurp.
+func newMockGH(t *testing.T, pages []string, reviews string) *mockGH {
 	t.Helper()
 	if len(pages) == 0 {
 		pages = []string{"[]"}
 	}
+	if reviews == "" {
+		reviews = "[]"
+	}
 	dir := t.TempDir()
-	// The script calls `gh api .../issues/N/comments --paginate --slurp
-	// --jq '<filter>'` (fetching the newest review-shaped bot comment) then,
-	// on success, `gh api .../pulls/N/reviews -f commit_id= -f event=
-	// -f body=`. The mock emulates gh: each page is served as a separate
-	// array, --slurp wraps them into one outer array, and the jq filter runs
-	// once over the slurped input (gh --slurp semantics). For the reviews
-	// POST it reconstructs the -f payload (base64-encoded values so newlines
-	// in the body survive the shell).
+	// The script calls `gh api .../issues/N/comments --paginate --slurp`
+	// (fetching the newest review-shaped bot comment), `gh api
+	// .../pulls/N/reviews` (GET — idempotence check), then on success
+	// `gh api .../pulls/N/reviews -f commit_id= -f event= -f body=`. The mock
+	// emulates gh: --paginate --slurp serves the outer page array on stdout
+	// (the script pipes it through external jq -r); the reviews GET returns
+	// the canned list; the reviews POST records the -f payload (base64-encoded
+	// values so newlines in the body survive the shell).
 	for i, p := range pages {
 		f := filepath.Join(dir, fmt.Sprintf("page%d.json", i))
 		if err := os.WriteFile(f, []byte(p), 0o644); err != nil {
 			t.Fatalf("write page %d fixture: %v", i, err)
 		}
 	}
-	// Join the page arrays into one outer array for the --slurp path. Each
-	// page is already a JSON array; concatenating with commas gives the
-	// slurped outer array.
-	slurped := strings.Join(pages, ",")
+	revFile := filepath.Join(dir, "reviews.json")
+	if err := os.WriteFile(revFile, []byte(reviews), 0o644); err != nil {
+		t.Fatalf("write reviews fixture: %v", err)
+	}
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
-printf '%%s\x00' "$@" >> %[1]s/args.log
 case "$*" in
   *"/pulls/"*"/reviews"*)
-    {
-      echo "{"
-      first=1
-      prev="-"
+    # GET (no -f args): return the canned reviews list (applying the
+    # requested --jq filter, as real gh does). POST (-f args): record the
+    # payload and echo a review object.
+    if printf '%%s ' "$@" | grep -q -- '-f'; then
+      {
+        echo "{"
+        first=1
+        prev="-"
+        for arg in "$@"; do
+          if [ "$prev" = "-f" ]; then
+            key="${arg%%=*}"
+            val="${arg#*=}"
+            [ "$first" -eq 1 ] || printf ',\n'
+            printf '"%%s": "%%s"' "$key" "$(printf '%%s' "$val" | base64 -w0)"
+            first=0
+          fi
+          prev="$arg"
+        done
+        echo ""
+        echo "}"
+      } > %[1]s/posted.json
+      echo '{"id":1}'
+    else
+      jqfilter=""
+      prev=""
       for arg in "$@"; do
-        if [ "$prev" = "-f" ]; then
-          key="${arg%%=*}"
-          val="${arg#*=}"
-          [ "$first" -eq 1 ] || printf ',\n'
-          printf '"%%s": "%%s"' "$key" "$(printf '%%s' "$val" | base64 -w0)"
-          first=0
+        if [ "$prev" = "--jq" ]; then
+          jqfilter="$arg"
         fi
         prev="$arg"
       done
-      echo ""
-      echo "}"
-    } > %[1]s/posted.json
-    echo '{"id":1}'
+      if [ -n "$jqfilter" ]; then
+        jq -r "$jqfilter" %[1]s/reviews.json
+      else
+        cat %[1]s/reviews.json
+      fi
+    fi
     ;;
   *"/issues/"*"/comments"*)
     jqfilter=""
@@ -182,12 +205,12 @@ case "$*" in
     ;;
   *) exit 1 ;;
 esac
-`, dir, slurped)
+`, dir)
 	bin := filepath.Join(dir, "gh")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
-	m := &mockGH{dir: dir, pages: pages}
+	m := &mockGH{dir: dir, pages: pages, reviews: reviews}
 	return m
 }
 
@@ -205,7 +228,6 @@ func (m *mockGH) path() string {
 	return filepath.Join(m.dir, "gh")
 }
 
-// runSalvage runs the script with the mock gh on PATH and returns its output.
 // runSalvage runs the script with the mock gh on PATH and returns its output
 // plus the salvaged value written to GITHUB_OUTPUT ("" if none was written).
 func runSalvage(t *testing.T, m *mockGH) (string, error) {
@@ -293,7 +315,7 @@ A review.
 ### Verdict
 **REQUEST CHANGES** — two items remain.
 `
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -310,7 +332,7 @@ All good.
 ### Verdict
 **APPROVE** — zero findings.
 `
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -331,7 +353,7 @@ review
 ### Verdict
 **APPROVE** — ok.
 `
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -348,7 +370,7 @@ func TestSalvage_RefusesStaleCommitReviewedSHA(t *testing.T) {
 	// unreviewed commits as approved — the ONLY safe behavior is to refuse
 	// and fall through to the LLM retry.
 	dumped := "**Commit reviewed:** `0ldsha1234567890`\n## Code Review\n\n### Verdict\n**APPROVE** — old.\n"
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -367,7 +389,7 @@ Close to **APPROVE** but two blocking findings remain.
 ### Verdict
 **REQUEST CHANGES** — see Correctness.
 `
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -377,7 +399,7 @@ Close to **APPROVE** but two blocking findings remain.
 
 func TestSalvage_NoReviewShapedComment(t *testing.T) {
 	chatter := "All verification complete. Composing the final review."
-	m := newMockGH(t, "["+comment(chatter)+"]")
+	m := newMockGH(t, []string{"[" + comment(chatter) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -386,7 +408,7 @@ func TestSalvage_NoReviewShapedComment(t *testing.T) {
 }
 
 func TestSalvage_NoCommentsAtAll(t *testing.T) {
-	m := newMockGH(t, "[]")
+	m := newMockGH(t, []string{"[]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -403,7 +425,7 @@ review
 ### Verdict
 The changes look fine.
 `
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0 with salvaged=false, not error: %v\noutput:\n%s", err, out)
@@ -420,7 +442,7 @@ func TestSalvage_PaginatedComments_PicksNewestGlobally(t *testing.T) {
 	// concatenated body. Post-fix: event=APPROVED from page 2 only.
 	page1 := comment("## Code Review\n\n### Verdict\n**REQUEST CHANGES** — old page1.\n")
 	page2 := comment("## Code Review\n\n### Verdict\n**APPROVE** — new page2.\n")
-	m := newMockGH(t, "["+page1+"]", "["+page2+"]")
+	m := newMockGH(t, []string{"[" + page1 + "]", "[" + page2 + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -433,7 +455,7 @@ func TestSalvage_PaginatedComments_PicksNewestGlobally(t *testing.T) {
 
 func TestSalvage_NonBotCommentsIgnored(t *testing.T) {
 	human := `{"user": {"login": "lenaxia"}, "body": "## Code Review\n\n### Verdict\n**APPROVE**\n"}`
-	m := newMockGH(t, "["+human+"]")
+	m := newMockGH(t, []string{"[" + human + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -450,7 +472,7 @@ func TestSalvage_MockRejectsSlurpWithJq(t *testing.T) {
 	// The mock's comments branch, when asked for --slurp + --jq together,
 	// must fail exactly like real gh. Drive it directly: run the mock gh as a
 	// subprocess with those flags and assert the usage error + non-zero exit.
-	m := newMockGH(t, "[]")
+	m := newMockGH(t, []string{"[]"}, "")
 	cmd := exec.Command(m.path())
 	cmd.Args = []string{"gh", "api", "repos/lenaxia/test/issues/123/comments", "--paginate", "--slurp", "--jq", ".[]"}
 	out, err := cmd.CombinedOutput()
@@ -493,7 +515,7 @@ func TestSalvage_FetchFailureEmitsSalvagedFalse(t *testing.T) {
 // proceeds.
 func TestSalvage_EmitsSalvagedFalseOnRefusal(t *testing.T) {
 	dumped := "**Commit reviewed:** `0ldsha1234567890`\n## Code Review\n\n### Verdict\n**APPROVE** — old.\n"
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
@@ -508,13 +530,49 @@ func TestSalvage_EmitsSalvagedFalseOnRefusal(t *testing.T) {
 // to the success path: salvaged=true after a posted review.
 func TestSalvage_EmitsSalvagedTrueOnSuccess(t *testing.T) {
 	dumped := "## Code Review\n\n### Verdict\n**APPROVE** — ok.\n"
-	m := newMockGH(t, "["+comment(dumped)+"]")
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
 	if got := salvagedValue(t, out); got != "true" {
 		t.Errorf("successful salvage must set salvaged=true, got %q", got)
+	}
+	assertSalvagedTrue(t, out, m, "APPROVED")
+}
+
+// TestSalvage_SkipsWhenOfficialVerdictExists is the R4 regression: after a
+// successful retry delivers an official verdict for the head SHA, a salvage
+// pass must NOT re-post a (pre-retry) dumped comment — that would make the
+// stale attempt the PR's newest official review, potentially overriding the
+// retry's fresh verdict (including stale-APPROVE over fresh-CHANGES_REQUESTED).
+// The script's idempotence check (GET /pulls/N/reviews for an existing bot
+// APPROVED/CHANGES_REQUESTED on the head) must short-circuit before the POST.
+func TestSalvage_SkipsWhenOfficialVerdictExists(t *testing.T) {
+	dumped := "## Code Review\n\n### Verdict\n**APPROVE** — stale pre-retry dump.\n"
+	// An existing official CHANGES_REQUESTED for the head SHA — the retry's
+	// fresh, authoritative verdict. The stale APPROVE dump must NOT override it.
+	existing := `[{"user":{"login":"github-actions[bot]"},"state":"CHANGES_REQUESTED","commit_id":"abcdef0123456789"}]`
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, existing)
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
+	}
+	if got := salvagedValue(t, out); got != "false" {
+		t.Errorf("script must skip salvage when an official head-SHA verdict exists (salvaged=false), got %q\noutput:\n%s", got, out)
+	}
+	assertNothingPosted(t, m)
+}
+
+// TestSalvage_PostsWhenNoOfficialVerdict is the positive control for the
+// idempotence check: with NO existing official review, a SHA-matching dump is
+// still salvaged.
+func TestSalvage_PostsWhenNoOfficialVerdict(t *testing.T) {
+	dumped := "## Code Review\n\n### Verdict\n**APPROVE** — ok.\n"
+	m := newMockGH(t, []string{"[" + comment(dumped) + "]"}, "[]")
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
 	assertSalvagedTrue(t, out, m, "APPROVED")
 }

@@ -1493,13 +1493,14 @@ func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
 }
 
 // stepIfDirective returns the step's `if:` directive line, or "" if none.
-// Skips comments, blank lines, and other leading directives (id:,
-// continue-on-error:, env:, uses:, run:) that may precede the if:.
+// Skips comments, blank lines, and other leading directives (the step name,
+// id:, continue-on-error:, env:, uses:, run:) that may precede the if:.
 func stepIfDirective(block string) string {
 	for _, line := range strings.Split(strings.TrimPrefix(block, "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case trimmed == "", strings.HasPrefix(trimmed, "#"),
+			strings.HasPrefix(trimmed, "- name:"),
 			strings.HasPrefix(trimmed, "id:"),
 			strings.HasPrefix(trimmed, "continue-on-error:"),
 			strings.HasPrefix(trimmed, "env:"),
@@ -1514,4 +1515,83 @@ func stepIfDirective(block string) string {
 		}
 	}
 	return ""
+}
+
+// TestStepIfDirectiveNegativeCase locks stepIfDirective itself: a gate
+// expressed only in a comment (not the if: directive) must FAIL the matcher,
+// and a gate dropped from the if: line must FAIL. This mirrors the negative-
+// case fixtures of the other verify-step tests so a regression that re-
+// broadens the matcher to block-substring matching is caught.
+func TestStepIfDirectiveNegativeCase(t *testing.T) {
+	tests := []struct {
+		name        string
+		block       string
+		wantIf      bool
+		wantAny     string
+		wantMissing bool
+	}{
+		{
+			name: "gate only in comment, no if directive",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        # must gate on salvaged != 'true'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			wantIf:  false,
+			wantAny: "",
+		},
+		{
+			name: "if present but missing salvaged guard",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			// The matcher must REJECT this: the guard is absent. wantIf true
+			// asserts the directive is found; wantMissing asserts it lacks
+			// the salvaged guard.
+			wantIf:      true,
+			wantAny:     `salvaged != 'true'`,
+			wantMissing: true,
+		},
+		{
+			name: "correct gate present",
+			block: `
+      - name: Salvage dumped verdict (after retry)
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        env:
+          PR_HEAD_SHA: x
+        run: salvage-verdict.sh
+`,
+			wantIf:  true,
+			wantAny: `salvaged != 'true'`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			directive := stepIfDirective(tc.block)
+			if tc.wantIf {
+				if directive == "" {
+					t.Fatalf("expected an if: directive, got none")
+				}
+				if tc.wantMissing {
+					if strings.Contains(directive, tc.wantAny) {
+						t.Errorf("if: directive %q must NOT contain %q (this is the negative fixture)", directive, tc.wantAny)
+					}
+				} else if !strings.Contains(directive, tc.wantAny) {
+					t.Errorf("if: directive %q must contain %q", directive, tc.wantAny)
+				}
+			} else if directive != "" {
+				t.Errorf("expected no if: directive, got %q", directive)
+			}
+		})
+	}
 }

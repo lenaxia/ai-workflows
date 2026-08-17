@@ -79,6 +79,23 @@ if printf '%s\n' "${body}" | grep -q '^\*\*Commit reviewed:\*\*'; then
   fi
 fi
 
+# Idempotence: never POST a review if an official bot APPROVED/CHANGES_REQUESTED
+# review for the head SHA already exists. This is the root-cause guard for the
+# post-retry duplicate/stale-signal class: after a successful retry delivers a
+# fresh verdict, a salvage pass would otherwise re-post the (older) dumped
+# comment as the NEWEST official review — including the unsafe direction of a
+# stale APPROVE overriding a fresh CHANGES_REQUESTED. The final verify step
+# only counts >= 1 review, so it cannot catch a wrong-latest; this check must.
+# (--paginate + per-page count: /pulls/N/reviews pages at 30, oldest first.)
+existing="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
+  --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
+  | awk '{s+=$1} END {print s+0}')"
+
+if [ "${existing}" -gt 0 ]; then
+  echo "Official bot verdict already on record for HEAD ${PR_HEAD_SHA} (count=${existing}) — nothing to salvage." >&2
+  exit 0
+fi
+
 # Verdict, parsed ONLY from the ### Verdict section (never from the Summary
 # or any quoted output-format rules). _V is the running section flag: emit
 # lines between "### Verdict" and the next "###" heading.
