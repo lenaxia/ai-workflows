@@ -10,15 +10,30 @@
 # APPROVED/CHANGES_REQUESTED review pinned to the head SHA, so those PRs spun
 # through extra rounds with no official verdict on record.
 #
-# This script finds the NEWEST review-shaped bot comment on a PR, derives the
-# verdict (APPROVE -> APPROVED, REQUEST CHANGES -> CHANGES_REQUESTED) from its
-# ### Verdict line, strips any stale "**Commit reviewed:**" line, and re-posts
-# it as an official review pinned to the given head SHA.
+# This script finds the NEWEST review-shaped bot comment on a PR whose
+# "**Commit reviewed:**" line (when present) matches the given head SHA,
+# derives the verdict (APPROVE -> APPROVED, REQUEST CHANGES ->
+# CHANGES_REQUESTED) from its "### Verdict" section, and re-posts it as an
+# official review pinned to the head SHA.
+#
+# Safety rules:
+#   - Only github-actions[bot] comments are considered.
+#   - A comment with a "**Commit reviewed:** <sha>" line that does NOT equal
+#     the target head SHA is refused (a stale verdict must never be re-pinned
+#     onto new commits) — the LLM retry then gets a chance to review properly.
+#   - The verdict is parsed ONLY from the "### Verdict" section, so an
+#     "APPROVE" mentioned in the Summary can never flip the event.
+#   - A comment with no parseable verdict is NOT posted (a COMMENT-only
+#     review would not satisfy the final verify gate and would add noise).
 #
 # Exit status 0 + salvaged=true: an official review was created.
-# Exit status 0 + salvaged=false: nothing to salvage (no review-shaped
-# comment, or verdict unparseable). Callers should then fail visibly so the
-# job surfaces the missing verdict (the pr-review.yml verify step).
+# Exit status 0 + salvaged=false: nothing to salvage (no matching comment, or
+# verdict unparseable, or stale SHA). Callers should then run the LLM retry /
+# verify so the missing verdict surfaces visibly.
+#
+# salvaged=false is emitted BEFORE any network work so a transient failure
+# inside this script still lets the caller's retry step proceed (the caller
+# gates on salvaged != 'true').
 #
 # Usage:
 #   REPOSITORY=owner/repo PR_NUMBER=NNN PR_HEAD_SHA=<sha> GH_TOKEN=<token> salvage-verdict.sh
@@ -31,30 +46,59 @@ set -euo pipefail
 : "${PR_HEAD_SHA:?PR_HEAD_SHA is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 
-body="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-  --jq '[.[] | select(.user.login == "github-actions[bot]") | .body] | map(select(test("## Code Review") and test("### Verdict"))) | last // empty')"
+# Default to "nothing salvaged" before doing any work; flip to true only on
+# a successful POST. This guarantees the caller (gated on salvaged != 'true')
+# can proceed with its LLM retry even if a transient gh/api failure kills the
+# script before it reaches the POST.
+[ -n "${GITHUB_OUTPUT:-}" ] && echo "salvaged=false" >> "${GITHUB_OUTPUT}"
+
+# Newest review-shaped bot comment, aggregated across ALL paginated pages.
+# --paginate runs the jq program once PER PAGE and concatenates raw outputs,
+# so `last` on a single page would pick the OLDEST page's newest comment.
+# --slurp wraps every page into one outer array, making the flattened
+# selection globally newest.
+body="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate --slurp \
+  --jq '[.[] | .[] | select(.user.login == "github-actions[bot]") | .body | select(test("## Code Review") and test("### Verdict"))] | last // empty')"
 
 if [ -z "${body}" ]; then
   echo "No review-shaped comment to salvage."
-  [ -n "${GITHUB_OUTPUT:-}" ] && echo "salvaged=false" >> "${GITHUB_OUTPUT}"
   exit 0
 fi
 
-event="$(printf '%s\n' "${body}" | grep -oE '\*\*?(APPROVE|REQUEST CHANGES)\*\*?|\b(APPROVE|REQUEST CHANGES)\b' | grep -oE '(APPROVE|REQUEST CHANGES)' | head -1 || true)"
+# Freshness: a comment that declares a different reviewed SHA is a stale
+# verdict from an earlier commit — refusing it is the ONLY safe choice, since
+# re-pinning it would mark unreviewed commits as approved. The review prompt
+# mandates the "**Commit reviewed:**" line, so the intended case always
+# carries a matching SHA (or, pre-prompt-format, no line at all).
+if printf '%s\n' "${body}" | grep -q '^\*\*Commit reviewed:\*\*'; then
+  reviewed_sha="$(printf '%s\n' "${body}" | sed -n 's/^\*\*Commit reviewed:\*\*[[:space:]]*`\?\([0-9a-f]*\)`\?/\1/p' | head -1)"
+  if [ -z "${reviewed_sha}" ] || [ "${reviewed_sha}" != "${PR_HEAD_SHA}" ]; then
+    echo "Dumped verdict is for a different commit (${reviewed_sha:-unknown}) — refusing to re-pin onto HEAD ${PR_HEAD_SHA}." >&2
+    exit 0
+  fi
+fi
+
+# Verdict, parsed ONLY from the ### Verdict section (never from the Summary
+# or any quoted output-format rules). _V is the running section flag: emit
+# lines between "### Verdict" and the next "###" heading.
+event="$(printf '%s\n' "${body}" | awk '
+  /^### Verdict/ { in_verdict=1; next }
+  /^### / { in_verdict=0 }
+  in_verdict { print }
+' | grep -oE '(APPROVE|REQUEST CHANGES)' | head -1 || true)"
 
 case "${event}" in
   APPROVE) event="APPROVED" ;;
   "REQUEST CHANGES") event="CHANGES_REQUESTED" ;;
   *)
-    echo "Dumped verdict has no parseable APPROVE/REQUEST CHANGES verdict — not salvaging." >&2
-    [ -n "${GITHUB_OUTPUT:-}" ] && echo "salvaged=false" >> "${GITHUB_OUTPUT}"
+    echo "Dumped verdict has no parseable APPROVE/REQUEST CHANGES verdict in its ### Verdict section — not salvaging." >&2
     exit 0
     ;;
 esac
 
-# Strip any stale "**Commit reviewed:**" line — the review's commit_id is set
-# explicitly on the API call below, and a stale SHA in the body would
-# contradict the pinned commit.
+# Strip the "**Commit reviewed:**" line — the review's commit_id is set
+# explicitly on the API call below; a body line would be redundant but is
+# stripped for cleanliness after the freshness check above passed.
 body="$(printf '%s\n' "${body}" | sed '/^\*\*Commit reviewed:\*\*/d')"
 
 gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \

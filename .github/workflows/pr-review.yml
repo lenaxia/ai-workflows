@@ -193,11 +193,18 @@ jobs:
         # class — PRs like LLMSafeSpaces#870 produced ~24 dumped verdicts),
         # recover the review-shaped comment body (## Code Review + ###
         # Verdict) into an OFFICIAL review pinned to the head SHA. The
-        # verdict is derived from the comment's Verdict line so the review
-        # carries the correct event (APPROVED/CHANGES_REQUESTED); unparseable
-        # verdicts are NOT salvaged (posting a COMMENT-only review would not
-        # satisfy the final gate and would only add noise). Logic lives in
-        # scripts/salvage-verdict.sh (unit-tested in tests/gharouter).
+        # verdict is derived from the comment's ### Verdict section so the
+        # review carries the correct event (APPROVED/CHANGES_REQUESTED);
+        # unparseable verdicts and stale-SHA comments are NOT salvaged
+        # (posting a COMMENT-only review would not satisfy the final gate and
+        # would only add noise). Logic lives in scripts/salvage-verdict.sh
+        # (unit-tested in tests/gharouter).
+        #
+        # continue-on-error: a transient failure here (the GitHub API blip
+        # class the retry exists for) must NOT stop the job — the retry step
+        # below runs when salvaged != 'true' (the script emits salvaged=false
+        # up-front, so an unset output from a crashed step also proceeds).
+        continue-on-error: true
         if: always() && steps.check-verdict.outputs.delivered == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -211,8 +218,16 @@ jobs:
         # salvage produced a verdict (transient model/API failures — e.g. a
         # provider 429 or a GitHub API blip killing the permission check).
         # Bounded to exactly one extra attempt; if this also fails to
-        # deliver, the final gate below fails the job visibly.
-        if: always() && steps.salvage.outputs.salvaged == 'false'
+        # deliver, a final salvage pass runs, then the verify gate fails the
+        # job visibly.
+        #
+        # Condition: delivered == 'false' AND salvage did not succeed.
+        # `!= 'true'` (rather than `== 'false'`) tolerates the unset output
+        # from a salvage step that crashed on a transient API failure, while
+        # the delivered=='false' guard still skips this when the verdict
+        # already landed (so a skipped/never-run salvage cannot re-run the
+        # LLM unnecessarily).
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -225,6 +240,22 @@ jobs:
           share: "false"
           prompt: ${{ env.OPENCODE_PROMPT }}
         continue-on-error: true
+
+      - name: Salvage dumped verdict (after retry)
+        # The retry run can itself dump a review-shaped comment instead of
+        # creating an official review (the same failure class as the first
+        # run). Re-run salvage against the post-retry comment stream so the
+        # retry's verdict is not wasted. Idempotent: posts nothing if the
+        # retry already delivered an official review or nothing new appeared.
+        id: salvage-retry
+        continue-on-error: true
+        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .ai-workflows/scripts/salvage-verdict.sh
 
       - name: Verify review submitted
         # Source of truth for the job's pass/fail: was a verdict (APPROVED or

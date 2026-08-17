@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -74,33 +75,41 @@ func decodeB64(s string) ([]byte, error) {
 }
 
 // mockGH is a fake `gh` executable. It records the review payload the script
-// submits and returns the canned comment-list JSON the script reads.
+// submits and returns canned comment-page JSON the script reads.
 type mockGH struct {
-	dir      string
-	comments string // raw JSON array the mock returns for /issues/N/comments
-	posted   []reviewPayload
+	dir    string
+	pages  []string // one raw JSON array per "page" of /issues/N/comments
+	posted []reviewPayload
 }
 
-func newMockGH(t *testing.T, comments string) *mockGH {
+// newMockGH creates a mock gh whose /issues/N/comments call serves the given
+// comment pages (one per pagination round). The script uses
+// `--paginate --slurp`, so the mock wraps all pages into one outer array
+// before applying the requested jq filter, mirroring real gh's --slurp.
+func newMockGH(t *testing.T, pages ...string) *mockGH {
 	t.Helper()
-	dir := t.TempDir()
-	// The script calls `gh api .../issues/N/comments --paginate --jq '<filter>'`
-	// (fetching the newest review-shaped bot comment) then, on success,
-	// `gh api .../pulls/N/reviews -f commit_id= -f event= -f body=`. The mock
-	// applies the jq contract itself: for the comments call it emits the
-	// canned comment bodies array (the script's jq filters them), and for the
-	// reviews POST it reconstructs the -f payload (base64-encoded values so
-	// newlines in the body survive the shell).
-	// The script calls `gh api .../issues/N/comments --paginate --jq '<filter>'`
-	// then `gh api .../pulls/N/reviews -f commit_id= -f event= -f body=`. The
-	// mock writes the canned comments to a file; for the comments call it runs
-	// real jq with the requested filter over that file (as real gh does), and
-	// for the reviews POST it reconstructs the -f payload (base64-encoded
-	// values so newlines in the body survive the shell).
-	commentsFile := filepath.Join(dir, "comments.json")
-	if err := os.WriteFile(commentsFile, []byte(comments), 0o644); err != nil {
-		t.Fatalf("write comments fixture: %v", err)
+	if len(pages) == 0 {
+		pages = []string{"[]"}
 	}
+	dir := t.TempDir()
+	// The script calls `gh api .../issues/N/comments --paginate --slurp
+	// --jq '<filter>'` (fetching the newest review-shaped bot comment) then,
+	// on success, `gh api .../pulls/N/reviews -f commit_id= -f event=
+	// -f body=`. The mock emulates gh: each page is served as a separate
+	// array, --slurp wraps them into one outer array, and the jq filter runs
+	// once over the slurped input (gh --slurp semantics). For the reviews
+	// POST it reconstructs the -f payload (base64-encoded values so newlines
+	// in the body survive the shell).
+	for i, p := range pages {
+		f := filepath.Join(dir, fmt.Sprintf("page%d.json", i))
+		if err := os.WriteFile(f, []byte(p), 0o644); err != nil {
+			t.Fatalf("write page %d fixture: %v", i, err)
+		}
+	}
+	// Join the page arrays into one outer array for the --slurp path. Each
+	// page is already a JSON array; concatenating with commas gives the
+	// slurped outer array.
+	slurped := strings.Join(pages, ",")
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%%s\x00' "$@" >> %[1]s/args.log
@@ -127,29 +136,33 @@ case "$*" in
     ;;
   *"/issues/"*"/comments"*)
     jqfilter=""
+    slurp=0
     prev=""
     for arg in "$@"; do
       if [ "$prev" = "--jq" ]; then
         jqfilter="$arg"
       fi
+      if [ "$prev" = "--slurp" ]; then
+        slurp=1
+      fi
       prev="$arg"
     done
-    if [ -n "$jqfilter" ]; then
-      # gh api --jq emits RAW output for string results (like jq -r), not
-      # JSON-quoted — emulate that so the script receives an unquoted body.
-      jq -r "$jqfilter" %[1]s/comments.json
+    if [ "$slurp" = "1" ]; then
+      # gh --paginate --slurp: jq input is the outer array of all pages.
+      printf '%%s' '[%[2]s]' | jq -r "$jqfilter"
     else
-      cat %[1]s/comments.json
+      # Single page (no slurp): jq runs over the first page.
+      jq -r "$jqfilter" %[1]s/page0.json
     fi
     ;;
   *) exit 1 ;;
 esac
-`, dir)
+`, dir, slurped)
 	bin := filepath.Join(dir, "gh")
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock gh: %v", err)
 	}
-	m := &mockGH{dir: dir, comments: comments}
+	m := &mockGH{dir: dir, pages: pages}
 	return m
 }
 
@@ -243,8 +256,11 @@ All good.
 	assertSalvagedTrue(t, out, m, "APPROVED")
 }
 
-func TestSalvage_StripsStaleCommitReviewedLine(t *testing.T) {
-	dumped := `**Commit reviewed:** 0ldsha123
+func TestSalvage_StripsMatchingCommitReviewedLine(t *testing.T) {
+	// A comment whose Commit reviewed line MATCHES the head SHA is salvaged,
+	// and the line is stripped from the posted body (commit_id is set via the
+	// API, so the body line is redundant).
+	dumped := `**Commit reviewed:** ` + "`" + `abcdef0123456789` + "`" + `
 ## Code Review
 
 ### Summary
@@ -259,9 +275,42 @@ review
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
 	assertSalvagedTrue(t, out, m, "APPROVED")
-	if len(m.posted) != 1 || contains(m.posted[0].Body, "0ldsha123") {
-		t.Errorf("stale Commit reviewed line must be stripped — the API commit_id is authoritative\nposted body:\n%s", m.posted[0].Body)
+	if len(m.posted) != 1 || strings.Contains(m.posted[0].Body, "Commit reviewed:") {
+		t.Errorf("matching Commit reviewed line must be stripped from the posted body\nposted body:\n%s", m.posted[0].Body)
 	}
+}
+
+func TestSalvage_RefusesStaleCommitReviewedSHA(t *testing.T) {
+	// R1: a comment declaring a DIFFERENT reviewed SHA is a stale verdict
+	// from an earlier commit. Re-pinning it onto the current head would mark
+	// unreviewed commits as approved — the ONLY safe behavior is to refuse
+	// and fall through to the LLM retry.
+	dumped := "**Commit reviewed:** `0ldsha1234567890`\n## Code Review\n\n### Verdict\n**APPROVE** — old.\n"
+	m := newMockGH(t, "["+comment(dumped)+"]")
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
+	}
+	assertNothingPosted(t, m)
+}
+
+func TestSalvage_VerdictScopedToVerdictSection(t *testing.T) {
+	// C2: an APPROVE mentioned in the Summary must never flip the event when
+	// the ### Verdict section says REQUEST CHANGES.
+	dumped := `## Code Review
+
+### Summary
+Close to **APPROVE** but two blocking findings remain.
+
+### Verdict
+**REQUEST CHANGES** — see Correctness.
+`
+	m := newMockGH(t, "["+comment(dumped)+"]")
+	out, err := runSalvage(t, m)
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
+	}
+	assertSalvagedTrue(t, out, m, "CHANGES_REQUESTED")
 }
 
 func TestSalvage_NoReviewShapedComment(t *testing.T) {
@@ -300,15 +349,24 @@ The changes look fine.
 	assertNothingPosted(t, m)
 }
 
-func TestSalvage_PicksNewestReviewShapedComment(t *testing.T) {
-	older := comment("## Code Review\n\n### Verdict\n**REQUEST CHANGES** — old.\n")
-	newer := comment("## Code Review\n\n### Verdict\n**APPROVE** — new.\n")
-	m := newMockGH(t, "["+older+","+newer+"]")
+func TestSalvage_PaginatedComments_PicksNewestGlobally(t *testing.T) {
+	// C1 regression: --paginate runs the jq filter PER PAGE and concatenates,
+	// so `last` on a single page would pick the OLDEST page's newest comment.
+	// --slurp must aggregate across pages before selecting. Page 1 (older)
+	// newest review-shaped comment is a REQUEST CHANGES dump; page 2 (newer)
+	// is an APPROVE dump. Pre-fix: event=CHANGES_REQUESTED from page 1 with a
+	// concatenated body. Post-fix: event=APPROVED from page 2 only.
+	page1 := comment("## Code Review\n\n### Verdict\n**REQUEST CHANGES** — old page1.\n")
+	page2 := comment("## Code Review\n\n### Verdict\n**APPROVE** — new page2.\n")
+	m := newMockGH(t, "["+page1+"]", "["+page2+"]")
 	out, err := runSalvage(t, m)
 	if err != nil {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
-	assertSalvagedTrue(t, out, m, "APPROVED") // newest wins
+	assertSalvagedTrue(t, out, m, "APPROVED") // globally newest wins
+	if len(m.posted) != 1 || strings.Contains(m.posted[0].Body, "page1") {
+		t.Errorf("salvaged body must be the globally newest page's dump only\nposted body:\n%s", m.posted[0].Body)
+	}
 }
 
 func TestSalvage_NonBotCommentsIgnored(t *testing.T) {
@@ -319,17 +377,4 @@ func TestSalvage_NonBotCommentsIgnored(t *testing.T) {
 		t.Fatalf("script must exit 0: %v\noutput:\n%s", err, out)
 	}
 	assertNothingPosted(t, m)
-}
-
-func contains(s, sub string) bool {
-	return len(sub) == 0 || len(s) >= len(sub) && indexOf(s, sub) >= 0
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

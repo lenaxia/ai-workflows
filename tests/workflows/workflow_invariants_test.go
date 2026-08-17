@@ -1407,3 +1407,64 @@ func TestTestRouterPathsCoverGuardedTrees(t *testing.T) {
 		}
 	}
 }
+
+// TestPrReviewSalvageRetryFlowLocked asserts the salvage/retry design stays
+// coherent:
+//
+//   - The retry step ("Run OpenCode (bounded retry)") runs ONLY when the
+//     first check found no verdict (delivered == 'false') AND salvage did not
+//     succeed. The `!= 'true'` (not `== 'false'`) comparison is deliberate:
+//     a salvage step that crashed on a transient API failure leaves
+//     salvaged UNSET, and the retry must still proceed. This test fails if
+//     someone "simplifies" the condition to `== 'false'` (which would skip
+//     the retry on the exact transient-failure class it exists for) or drops
+//     the delivered guard (which would re-run the LLM on every successful
+//     review, doubling cost).
+//   - The salvage step must tolerate its own failure (continue-on-error) so
+//     a gh/API blip cannot fail the job outright — the retry owns the
+//     recovery.
+//   - The script emits salvaged=false up-front (before the POST), so an
+//     unset output from a crashed step still means "did not salvage".
+func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+
+	checkStep := stepBlock(body, "Check verdict delivered")
+	if checkStep == "" {
+		t.Fatal("pr-review.yml: no 'Check verdict delivered' step found — the salvage/retry flow requires it")
+	}
+	if !strings.Contains(checkStep, "delivered=false") {
+		t.Errorf("pr-review.yml: 'Check verdict delivered' must set delivered=false when no verdict is found")
+	}
+
+	salvageStep := stepBlock(body, "Salvage dumped verdict")
+	if salvageStep == "" {
+		t.Fatal("pr-review.yml: no 'Salvage dumped verdict' step found")
+	}
+	if !strings.Contains(salvageStep, "continue-on-error: true") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must tolerate its own failure (continue-on-error) so " +
+			"a transient gh/API blip cannot fail the job — the retry step owns the recovery")
+	}
+	if !strings.Contains(salvageStep, "delivered == 'false'") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must run only when delivered == 'false' " +
+			"(a delivered verdict needs no salvage)")
+	}
+	if !strings.Contains(salvageStep, "salvage-verdict.sh") {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must invoke scripts/salvage-verdict.sh")
+	}
+
+	retryStep := stepBlock(body, "Run OpenCode (bounded retry)")
+	if retryStep == "" {
+		t.Fatal("pr-review.yml: no 'Run OpenCode (bounded retry)' step found")
+	}
+	// The retry condition is the security-critical guard. `!= 'true'`
+	// (rather than `== 'false'`) tolerates an unset output from a crashed
+	// salvage step; the delivered guard prevents a wasted LLM re-run when the
+	// verdict already landed.
+	if !strings.Contains(retryStep, `delivered == 'false'`) {
+		t.Errorf("pr-review.yml: retry step must gate on delivered == 'false' (skip when the verdict landed)")
+	}
+	if !strings.Contains(retryStep, `salvaged != 'true'`) {
+		t.Errorf("pr-review.yml: retry step must gate on salvaged != 'true' (NOT == 'false') so a salvage step " +
+			"that crashed on a transient API failure (leaving salvaged unset) still proceeds to the retry")
+	}
+}
