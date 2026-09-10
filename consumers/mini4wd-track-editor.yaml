@@ -1,0 +1,41 @@
+# Consumer config for lenaxia/mini4wd-track-editor.
+#
+# mini4wd-track-editor is a zero-dependency, no-build static web app (vanilla
+# JS canvas editor for Tamiya Mini4WD race tracks, byte-compatible with the
+# original pimentoso track format). It uses ai-workflows for workflow
+# plumbing only (reusable workflows, route-command.sh, post-footer.sh,
+# formal-blocking-review directive).
+#
+# All prompts are editor-specific (canvas interaction model, piece catalog,
+# snap vertices, serialization compatibility, touch-first UX) and are wrong
+# for the gokore-derived shared templates. Every prompt is forked.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+
+name: mini4wd-track-editor
+version: v0.2.0
+
+vars:
+  project_name: mini4wd-track-editor
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - renovate-analysis.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
