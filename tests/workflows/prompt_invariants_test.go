@@ -259,6 +259,47 @@ func TestK8sMechanicForksAllTemplates(t *testing.T) {
 	}
 }
 
+// TestMini4wdTrackEditorForksAllTemplates is the zero-render guard for the
+// mini4wd-track-editor consumer — same plumbing-only, all-forked shape as
+// k8s-mechanic (see TestK8sMechanicForksAllTemplates for the rationale).
+// A mis-indented or typo'd entry in the `forked:` list of
+// consumers/mini4wd-track-editor.yaml silently un-forks the file under the
+// homegrown, schema-less YAML subset (scripts/ai-sync/main.go); this repo's
+// PR CI is path-filtered and never touches consumers/, so this test is the
+// only guard against propagate clobbering a forked prompt.
+func TestMini4wdTrackEditorForksAllTemplates(t *testing.T) {
+	root := workflowRoot(t)
+	bin := buildAiSync(t)
+	rendered := t.TempDir()
+
+	cmd := exec.Command(bin, "render", "--repo-root", root,
+		"--consumer", "mini4wd-track-editor", "--into", rendered)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render mini4wd-track-editor: %v\n%s", err, out)
+	}
+
+	entries, err := os.ReadDir(rendered)
+	if err != nil {
+		t.Fatalf("read rendered dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) > 0 {
+		t.Errorf("mini4wd-track-editor render produced %d file(s): %v — every prompt template must be forked.\n"+
+			"The consumer's prompts are repo-specific; any file that renders here will be written by "+
+			"propagate and can clobber the consumer's forked copy with the generic template. A "+
+			"mis-indented or typo'd entry in the `forked:` list of consumers/mini4wd-track-editor.yaml "+
+			"silently un-forks the file. The config parses with a homegrown YAML subset, so this "+
+			"test is the guard. Renderer output:\n%s", len(files), files, out)
+	}
+}
+
 // TestForkingConsumersDoNotRenderRenovateAnalysis asserts that every consumer
 // onboarding to the reusable renovate-analysis workflow (ai-workflows#36)
 // forks renovate-analysis.md — the renderer must NOT produce it.
@@ -291,6 +332,7 @@ func TestForkingConsumersDoNotRenderRenovateAnalysis(t *testing.T) {
 		"tinyrsvp",
 		"talos-ops-prod",
 		"k8s-mechanic",
+		"mini4wd-track-editor",
 	}
 
 	for _, consumer := range consumers {
