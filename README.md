@@ -8,7 +8,7 @@ Provides reusable GitHub Action workflows, prompt templates, and the
 `route-command.sh` router that powers slash-command AI interactions
 (`/fix`, `/implement`, `/review`, etc.) on issues and PRs.
 
-Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP, containers,
+Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP, mamahuhu, containers,
 talos-ops-prod, synology-to-immich, k8s-mechanic, mini4wd-track-editor) reference
 this repo via pinned reusable workflows. gokore additionally renders shared
 prompt templates; the other consumers fork their prompts (project-specific)
@@ -662,3 +662,4 @@ dogfood-bump job are all locked by
 | synology-to-immich | Active | Plumbing-only consumer; all prompts forked (Synology Photos → Immich migration, PostgreSQL, NFS, not gokore-derived) |
 | k8s-mechanic | Active | Plumbing-only consumer; all prompts forked (Kubernetes operator, controller-runtime, RemediationJob CRDs, Helm chart, redact wrappers, not gokore-derived) |
 | mini4wd-track-editor | Active | Plumbing-only consumer; all prompts forked (zero-build static canvas editor, not gokore-derived) |
+| mamahuhu | Active | Plumbing-only consumer; all prompts forked (React/Hono Mandarin vocab app, contract-first zod seams, not gokore-derived) |

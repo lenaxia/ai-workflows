@@ -1197,6 +1197,49 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 	}
 }
 
+// TestPropagateMatrixCoversAllConsumerConfigs asserts the reverse direction
+// of TestPropagateMatrixConsumersHaveConfigFiles: every consumers/<name>.yaml
+// config appears in the propagate matrix. The matrix is the only propagation
+// path (the renderer's listConsumers is CLI-only), so a config without a
+// matrix entry never receives render/bump/sync PRs — its pin silently drifts
+// (the silent-drift class documented in Lessons Learned #9). Excludes the
+// self-consumer ai-workflows.yaml, which propagate handles via dogfood-bump.
+func TestPropagateMatrixCoversAllConsumerConfigs(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+	matrix := map[string]bool{}
+	for _, c := range strings.Split(m[1], ",") {
+		if name := strings.TrimSpace(c); name != "" {
+			matrix[name] = true
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "consumers"))
+	if err != nil {
+		t.Fatalf("read consumers dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".yaml")
+		if name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !matrix[name] {
+			t.Errorf("consumers/%s.yaml has no entry in the propagate.yml matrix — "+
+				"it will never receive render/bump/sync PRs and its pin silently drifts. "+
+				"Add %q to the consumer matrix in .github/workflows/propagate.yml.", e.Name(), name)
+		}
+	}
+}
+
 // TestPropagateDogfoodBumpPRGatedOnAuth asserts the dogfood-bump job gates
 // its push/PR step on a Workflows-granted credential being available. The
 // job's commit modifies .github/workflows/self-*.yml (the dogfood pin
