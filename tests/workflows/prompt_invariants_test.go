@@ -305,9 +305,11 @@ func TestMini4wdTrackEditorForksAllTemplates(t *testing.T) {
 // mini4wd-track-editor (see TestK8sMechanicForksAllTemplates for the
 // rationale). A mis-indented or typo'd entry in the `forked:` list of
 // consumers/mamahuhu.yaml silently un-forks the file under the homegrown,
-// schema-less YAML subset (scripts/ai-sync/main.go); this repo's PR CI is
-// path-filtered and never touches consumers/, so this test is the only guard
-// against propagate clobbering a forked prompt.
+// schema-less YAML subset (scripts/ai-sync/main.go). PR CI runs go test
+// ./... on consumers/** changes (since #41, locked by
+// TestTestRouterPathsCoverGuardedTrees), so this guard executes on the exact
+// config change that could un-fork a prompt — belt to that suspenders for the
+// clobber-by-propagate failure mode.
 func TestMamahuhuForksAllTemplates(t *testing.T) {
 	root := workflowRoot(t)
 	bin := buildAiSync(t)

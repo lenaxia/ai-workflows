@@ -1240,6 +1240,60 @@ func TestPropagateMatrixCoversAllConsumerConfigs(t *testing.T) {
 	}
 }
 
+// TestReadmeConsumersMatchMatrix locks README↔matrix parity: every non-self
+// consumer in the propagate matrix must appear BOTH as a `| <name> |` row in
+// the README "## Consumers" table AND in the intro paragraph's consumer list.
+// The README has drifted from the matrix twice in the same defect class
+// (#26/#27 omitted ai-or-not/ha-custom-components; the mamahuhu onboarding
+// initially omitted its table row). This is the docs-side counterpart of
+// TestPropagateMatrixCoversAllConsumerConfigs.
+func TestReadmeConsumersMatchMatrix(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+	matrix := map[string]bool{}
+	for _, c := range strings.Split(m[1], ",") {
+		if name := strings.TrimSpace(c); name != "" {
+			matrix[name] = true
+		}
+	}
+	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(readmeBytes)
+
+	// README may use display case (LLMSafeSpaces vs config llmsafespaces), so
+	// parity is case-insensitive — the same case convention the matrix uses
+	// config-case for (see TestPropagateMatrixConsumersHaveConfigFiles).
+	rowRe := regexp.MustCompile(`(?m)^\| ([A-Za-z0-9_-]+) \|`)
+	rowNames := map[string]bool{}
+	for _, m := range rowRe.FindAllStringSubmatch(readme, -1) {
+		rowNames[strings.ToLower(m[1])] = true
+	}
+	tokenRe := regexp.MustCompile(`[A-Za-z0-9_-]+`)
+	introNames := map[string]bool{}
+	for _, tok := range tokenRe.FindAllString(readme, -1) {
+		introNames[strings.ToLower(tok)] = true
+	}
+
+	for name := range matrix {
+		if name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !rowNames[name] {
+			t.Errorf("README: consumer %q has no row (case-insensitive) in the ## Consumers table.", name)
+		}
+		if !introNames[name] {
+			t.Errorf("README: consumer %q missing (case-insensitive) from the intro consumer list.", name)
+		}
+	}
+}
+
 // TestPropagateDogfoodBumpPRGatedOnAuth asserts the dogfood-bump job gates
 // its push/PR step on a Workflows-granted credential being available. The
 // job's commit modifies .github/workflows/self-*.yml (the dogfood pin
