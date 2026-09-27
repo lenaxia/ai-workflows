@@ -749,3 +749,5 @@ carries the same delivery gates as pr-review.yml.
 | mini4wd-track-editor | Active | Plumbing-only consumer; all prompts forked (zero-build static canvas editor, not gokore-derived) |
 | ragnaalbum | Active | Plumbing-only consumer; all prompts forked (the fleet's Old Card Album: Go module, tier-labeled fact cards, ADR-001 layer boundaries) |
 | mamahuhu | Active | Plumbing-only consumer; all prompts forked (React/Hono Mandarin vocab app, contract-first zod seams, not gokore-derived) |
+| ai-or-not | Active | Plumbing-only consumer; all prompts forked (AI-content classifier, not gokore-derived) |
+| ha-custom-components | Active | Plumbing-only consumer; all prompts forked (Home Assistant custom components, not gokore-derived) |
