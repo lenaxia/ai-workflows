@@ -1,0 +1,48 @@
+# Consumer config for lenaxia/mamahuhu.
+#
+# Mamahuhu (馬馬虎虎) is a mobile-first Mandarin vocab companion: React 19 +
+# Vite + Tailwind v4 client, Hono server, SQLite/Postgres parity, CC-CEDICT
+# dictionary pipeline, LiteLLM gateway (qwen3.8 vision/chat, kokoro TTS,
+# optional whisper STT). Deployed via Docker + bjw-s/app-template behind
+# forward-auth.
+#
+# Like TinyRSVP, Mamahuhu uses ai-workflows for the PLUMBING only (reusable
+# workflows, route-command.sh, post-footer.sh, the formal-blocking-review
+# directive) and owns all of its prompts: the rules that matter here are
+# contract-first TDD over shared zod schemas, strict noUncheckedIndexedAccess
+# typing, ports-based service seams, and the dictionary-vs-LLM division of
+# truth — none of which the shared template spine knows about.
+#
+# context.md is consumer-owned (100% per-repo). Sync never touches it.
+#
+# To converge a prompt later: either (a) keep it forked and edit it in the
+# consumer repo, or (b) add a consumers/mamahuhu/<name>.md override block and
+# move the file out of `forked`.
+
+name: mamahuhu
+version: v0.1.0
+
+vars:
+  project_name: Mamahuhu
+  rules_doc: SPEC.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - renovate-analysis.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []

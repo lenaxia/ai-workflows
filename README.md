@@ -9,8 +9,8 @@ Provides reusable GitHub Action workflows, prompt templates, and the
 (`/fix`, `/implement`, `/review`, etc.) on issues and PRs.
 
 Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP, containers,
-talos-ops-prod, synology-to-immich, k8s-mechanic, mini4wd-track-editor,
-RagnaAlbum) reference
+talos-ops-prod, synology-to-immich, ha-custom-components, ai-or-not,
+k8s-mechanic, mini4wd-track-editor, RagnaAlbum, functions, mamahuhu) reference
 this repo via pinned reusable workflows. gokore additionally renders shared
 prompt templates; the other consumers fork their prompts (project-specific)
 and use this repo for workflow plumbing only (router, footer, reusable
@@ -748,3 +748,4 @@ carries the same delivery gates as pr-review.yml.
 | k8s-mechanic | Active | Plumbing-only consumer; all prompts forked (Kubernetes operator, controller-runtime, RemediationJob CRDs, Helm chart, redact wrappers, not gokore-derived) |
 | mini4wd-track-editor | Active | Plumbing-only consumer; all prompts forked (zero-build static canvas editor, not gokore-derived) |
 | ragnaalbum | Active | Plumbing-only consumer; all prompts forked (the fleet's Old Card Album: Go module, tier-labeled fact cards, ADR-001 layer boundaries) |
+| mamahuhu | Active | Plumbing-only consumer; all prompts forked (React/Hono Mandarin vocab app, contract-first zod seams, not gokore-derived) |
