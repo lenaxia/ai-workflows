@@ -1,0 +1,44 @@
+# Consumer config for lenaxia/RagnaAlbum.
+#
+# RagnaAlbum ("the fleet's Old Card Album") uses ai-workflows for the
+# workflow PLUMBING only (reusable workflows, route-command.sh,
+# post-footer.sh, the formal-blocking-review directive). It owns all of its
+# own prompts: they are album-specific (Go module, tier-labeled fact cards,
+# offline binder determinism, the ADR-001 layer contract with its forbidden
+# dependency boundaries). The shared template prompts are gokore-derived and
+# are wrong for this repo — rendering them would clobber correct prompts.
+#
+# Mirrors the convention used by tinyrsvp.yaml (fork all command prompts;
+# no override blocks). context.md is consumer-owned; sync never touches it.
+#
+# To converge a prompt later: either (a) keep it forked and edit it in the
+# consumer repo, or (b) add a consumers/ragnaalbum/<name>.md override block
+# and move the file out of `forked`.
+
+name: ragnaalbum
+version: v0.1.0
+
+vars:
+  project_name: RagnaAlbum
+  rules_doc: README-LLM.md
+
+forked:
+  - context.md
+  - core-rules.md
+  - analyze.md
+  - code-change-workflow.md
+  - commands-footer.md
+  - design.md
+  - explain.md
+  - fix.md
+  - help.md
+  - implement.md
+  - issue-responder.md
+  - merge.md
+  - pr-review.md
+  - renovate-analysis.md
+  - security.md
+  - test.md
+  - triage.md
+
+blocks: []
