@@ -1647,3 +1647,38 @@ func TestLLMSafeSpacesForksMergeAndPrReview(t *testing.T) {
 		}
 	}
 }
+
+// TestConsumerConfigFilesAreInPropagateMatrix is the REVERSE direction of
+// TestPropagateMatrixConsumersHaveConfigFiles: every consumers/*.yaml
+// except the self-dogfood ai-workflows.yaml must appear in the hardcoded
+// propagate matrix. The matrix is a literal list — consumer discovery does
+// NOT read consumers/ — so a config without a matrix entry silently never
+// receives sync PRs (pin/prompt drift), the exact incident class the
+// ragnaalbum onboarding almost shipped.
+func TestConsumerConfigFilesAreInPropagateMatrix(t *testing.T) {
+	root := invRoot(t)
+	wf := readWorkflowFile(t, root, "propagate.yml")
+	m := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`).FindSubmatch([]byte(wf))
+	if m == nil {
+		t.Fatal("propagate matrix not found")
+	}
+	matrix := string(m[1])
+	matrixTokens := map[string]bool{}
+	for _, tok := range strings.Split(matrix, ",") {
+		matrixTokens[strings.TrimSpace(tok)] = true
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "consumers"))
+	if err != nil {
+		t.Fatalf("read consumers/: %v", err)
+	}
+	allowlist := map[string]bool{"ai-workflows": true} // self-dogfood: the dogfood-bump job, not the matrix
+	for _, e := range entries {
+		name := strings.TrimSuffix(e.Name(), ".yaml")
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") || allowlist[name] {
+			continue
+		}
+		if !matrixTokens[name] {
+			t.Errorf("consumers/%s.yaml has no propagate matrix entry in .github/workflows/propagate.yml — the consumer will silently never receive sync PRs", name)
+		}
+	}
+}

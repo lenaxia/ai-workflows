@@ -333,6 +333,7 @@ func TestForkingConsumersDoNotRenderRenovateAnalysis(t *testing.T) {
 		"talos-ops-prod",
 		"k8s-mechanic",
 		"mini4wd-track-editor",
+		"ragnaalbum",
 	}
 
 	for _, consumer := range consumers {
@@ -353,5 +354,41 @@ func TestForkingConsumersDoNotRenderRenovateAnalysis(t *testing.T) {
 					"and loses the consumer's repo-specific exclusions.", consumer, consumer)
 			}
 		})
+	}
+}
+
+// TestRagnaAlbumForksAllTemplates asserts the ragnaalbum consumer (the
+// fleet's Old Card Album) renders ZERO prompt files — all templates are
+// forked (plumbing-only consumer, #45 contract). The homegrown YAML-subset
+// parser silently ignores a mis-indented or typo'd forked: entry; this
+// render IS the guard against propagate clobbering a forked prompt with
+// the gokore-derived generic template.
+func TestRagnaAlbumForksAllTemplates(t *testing.T) {
+	root := workflowRoot(t)
+	bin := buildAiSync(t)
+	rendered := t.TempDir()
+
+	cmd := exec.Command(bin, "render", "--repo-root", root,
+		"--consumer", "ragnaalbum", "--into", rendered)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render ragnaalbum: %v\n%s", err, out)
+	}
+
+	entries, err := os.ReadDir(rendered)
+	if err != nil {
+		t.Fatalf("read rendered dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) > 0 {
+		t.Errorf("ragnaalbum render produced %d file(s): %v — every prompt template must be forked.\n"+
+			"A mis-indented or typo'd entry in consumers/ragnaalbum.yaml's forked: list silently "+
+			"un-forks the file. Renderer output:\n%s", len(files), files, out)
 	}
 }
