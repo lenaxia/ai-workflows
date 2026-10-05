@@ -333,6 +333,7 @@ func TestForkingConsumersDoNotRenderRenovateAnalysis(t *testing.T) {
 		"talos-ops-prod",
 		"k8s-mechanic",
 		"mini4wd-track-editor",
+		"ragnaalbum",
 	}
 
 	for _, consumer := range consumers {
