@@ -1663,6 +1663,10 @@ func TestConsumerConfigFilesAreInPropagateMatrix(t *testing.T) {
 		t.Fatal("propagate matrix not found")
 	}
 	matrix := string(m[1])
+	matrixTokens := map[string]bool{}
+	for _, tok := range strings.Split(matrix, ",") {
+		matrixTokens[strings.TrimSpace(tok)] = true
+	}
 	entries, err := os.ReadDir(filepath.Join(root, "consumers"))
 	if err != nil {
 		t.Fatalf("read consumers/: %v", err)
@@ -1673,7 +1677,7 @@ func TestConsumerConfigFilesAreInPropagateMatrix(t *testing.T) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") || allowlist[name] {
 			continue
 		}
-		if !strings.Contains(matrix, name) {
+		if !matrixTokens[name] {
 			t.Errorf("consumers/%s.yaml has no propagate matrix entry in .github/workflows/propagate.yml — the consumer will silently never receive sync PRs", name)
 		}
 	}
