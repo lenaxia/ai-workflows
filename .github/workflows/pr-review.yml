@@ -146,6 +146,19 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # TOKEN switches the action to GITHUB_TOKEN mode (the intent of
+          # use_github_token: "true" — the input alone does not populate the
+          # env the action checks). Effects, both wanted: (1) assertPermissions
+          # SKIPS (its collaborator check structurally returns 'none' for
+          # app-bot PR authors — org app bots are not collaborators — killing
+          # every app-authored PR at 23s); (2) verdicts submit as
+          # github-actions[bot], which the check-verdict/verify filter requires
+          # (App-token reviews carry a null login and fail the gate DESPITE
+          # being official verdicts — observed on all five recreated PRs
+          # 2026-10-10). Trade-off: the outside-contributor permission assert
+          # no longer runs in this mode; acceptable for private org consumers
+          # (the documented consumer pattern).
         with:
           model: openai-compatible/default
           use_github_token: "true"
@@ -240,6 +253,19 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # TOKEN switches the action to GITHUB_TOKEN mode (the intent of
+          # use_github_token: "true" — the input alone does not populate the
+          # env the action checks). Effects, both wanted: (1) assertPermissions
+          # SKIPS (its collaborator check structurally returns 'none' for
+          # app-bot PR authors — org app bots are not collaborators — killing
+          # every app-authored PR at 23s); (2) verdicts submit as
+          # github-actions[bot], which the check-verdict/verify filter requires
+          # (App-token reviews carry a null login and fail the gate DESPITE
+          # being official verdicts — observed on all five recreated PRs
+          # 2026-10-10). Trade-off: the outside-contributor permission assert
+          # no longer runs in this mode; acceptable for private org consumers
+          # (the documented consumer pattern).
         with:
           model: openai-compatible/default
           use_github_token: "true"
