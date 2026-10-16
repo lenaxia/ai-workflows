@@ -222,7 +222,8 @@ jobs:
        contains(github.event.comment.body, ' /merge')) &&
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR')
+       github.event.comment.author_association == 'COLLABORATOR' ||
+       contains(fromJson('["<trusted-app-bot>[bot]"]'), github.event.comment.user.login))
     uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.0
     secrets: inherit
     with:
@@ -481,6 +482,16 @@ The command-token filter and `author_association` check **must** live in the
 caller, not the reusable workflow. Same for the `renovate[bot]` skip on
 `pr-review.yml`.
 
+**Trusted app bots need an explicit allowlist entry.** App bots
+(`something[bot]`) always carry `author_association: NONE` — they are neither
+owners nor collaborators — so an association-only gate silently drops every
+command they post (LLMSafeSpaces#1710: the orchestrator's `/review` outage
+fallback was a no-op — job conclusion `skipped` — for exactly this reason).
+If an app bot should be allowed to trigger commands, add an explicit login
+allowlist arm to the caller's `if:` (see the snippet above): each entry is a
+deliberate trust decision, which is the point — association can never
+authorize a bot.
+
 ### 5. Git identity must be configured on self-hosted runners
 
 This org's self-hosted ubuntu runners don't ship a default `git user.name` /
@@ -631,6 +642,56 @@ releases (v0.2.2 / v0.2.3 / v0.2.4):
 The token-fallback, `app || pat`-gated PR steps, skip-step-with-warning, and
 dogfood-bump job are all locked by
 `tests/workflows/workflow_invariants_test.go::TestPropagate*`.
+
+### 10. Verdict-delivery identity matrix + two-channel fallback (#49 / #46)
+
+**Who posts the verdict.** The reviewer always runs in GITHUB_TOKEN mode
+(`use_github_token: "true"` — the composite action's `USE_GITHUB_TOKEN` env;
+the CLI never reads a `TOKEN` env, which is why #49 round 1's `TOKEN:` line
+was dead code). Every verdict — review event or comment — is submitted by
+`github-actions[bot]`. The App-installation-token mode (OIDC exchange) exists
+in the action but is not used by these workflows.
+
+**Two-channel delivery.** `scripts/check-verdict.sh` is the single gate used
+by pr-review.yml's check/verify steps AND ai-comment.yml's `/review` tail.
+A verdict counts as delivered against the head SHA via EITHER:
+
+- an official `APPROVED`/`CHANGES_REQUESTED` review by `github-actions[bot]`
+  pinned to the head SHA (the preferred channel — branch protection reads
+  it), OR
+- a bot comment whose first line is
+  `<!-- ai-workflows-verdict: APPROVE|REQUEST_CHANGES sha=<full head SHA> -->`
+  followed by the standard review body — the REQUIRED fallback for the cell
+  where GitHub refuses the review event itself (422 "GitHub Actions is not
+  permitted to approve pull requests" — the repo/org setting class of
+  issue #46). The salvage pass still tries to upgrade a marker comment to an
+  official review; when the platform refuses that too, the marker comment
+  stands as the delivered verdict.
+
+**Red failure is reserved for "neither channel could post"** (owner ruling
+#6209846676) — never a silent green.
+
+The identity matrix (PR author × trigger → outcome):
+
+| PR author | `pull_request` event | `/review` comment (member) | `/review` comment (app bot) |
+|---|---|---|---|
+| Human owner/member | pre-flight passes; review submits (APPROVE needs the org setting "Allow GitHub Actions to create and approve pull requests"); on 422 → marker-comment fallback | commenter passes caller gate; same delivery | caller gate must allowlist the bot (association is always `NONE` — see #4) |
+| Human outside contributor | pre-flight blocks (collaborator permission `read`/`none` = the CLI's assertPermissions would refuse): explanatory comment + red | same as above — member-triggered `/review` is the recovery path | — |
+| Unlisted app bot | pre-flight blocks (apps are not collaborators → `none`): explanatory comment + red | same recovery path | — |
+| Skip-listed bot (renovate, github-actions, …) | job-level skip by design | — | — |
+
+The pre-flight (`scripts/author-permission.sh`) queries the SAME endpoint and
+pass-set as the CLI's `assertPermissions` (`GET /repos/{o}/{r}/collaborators/
+{user}/permission`, `admin|write`) and fails OPEN on API errors, so it can
+never skip a run the CLI would have accepted — it only front-runs
+structurally doomed attempts. Pinned in `tests/gharouter/authorperm_test.go`
+and `tests/workflows/verdict_delivery_test.go`.
+
+**Lost `pull_request` events** (the LLMSafeSpaces #1704/#1707 outage class —
+#1708 went verdict-less for a night because no run ever fired on its branch)
+are invisible to the workflow by construction; the recovery path is a
+member-posted `/review`, which is why the ai-comment `/review` tail now
+carries the same delivery gates as pr-review.yml.
 
 ## Troubleshooting
 

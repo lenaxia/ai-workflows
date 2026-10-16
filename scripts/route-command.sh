@@ -40,6 +40,16 @@ route_command() {
 
   local pr_head_sha="${PR_HEAD_SHA:-}"
 
+  # Verdict-delivery fallback directive (issue #46 / owner ruling
+  # ai-workflows#6209846676): appended to every review-shaped prompt so the
+  # reviewer never lets a completed verdict die on a platform refusal of the
+  # review event (422 "GitHub Actions is not permitted to approve pull
+  # requests"). The marker line is machine-greppable — scripts/check-verdict.sh
+  # accepts it as the delivered verdict when the official review channel is
+  # refused. Defined once, appended by the review paths below.
+  local fallback_directive
+  fallback_directive=$'\n\nVerdict-delivery contract (overrides any conflicting instruction above): FIRST always try to submit your verdict as a formal pull request review event (`gh pr review <N> --approve` or `--request-changes`) against the head SHA recorded in the prompt. If GitHub refuses the review submission itself — HTTP 422 / "GitHub Actions is not permitted to approve pull requests" / any "not permitted" refusal on the SUBMIT call (not on reads) — you MUST still deliver the complete review: post it as ONE ordinary PR comment whose first line is exactly `<!-- ai-workflows-verdict: APPROVE sha=<full head SHA from the prompt> -->` (or REQUEST_CHANGES), followed by the full review body in the required format (**Commit reviewed:** line, ## Code Review, all sections, ### Verdict). Never deliver nothing. Never submit a COMMENT-only review, a dishonest verdict, or a verdict pinned to any other SHA.\n'
+
   # Detect which command was used (check start of comment first, then inline).
   # Each pattern requires the command keyword followed by end-of-string or
   # a space — this prevents false matches like /testing → /test or /fixing → /fix.
@@ -113,6 +123,10 @@ route_command() {
         printf '\n\nAdditional review focus from collaborator:\n\n> %s\n' "$NOTE" >> "$OUT"
       fi
       printf '\n\nA collaborator requested an explicit review using `/review`.\n' >> "$OUT"
+      # PR context only: an issue-context /review has no PR verdict to deliver.
+      if [ -n "$pr_url" ] || [ "$event_name" = "pull_request_review_comment" ]; then
+        printf '%s' "$fallback_directive" >> "$OUT"
+      fi
       ;;
     /fix)
       cat "${prompts_dir}/fix.md" >> "$OUT"
@@ -187,6 +201,7 @@ route_command() {
           printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$pr_head_sha" >> "$OUT"
         fi
         printf '\n\nA collaborator triggered a re-review by posting `/ai`. Re-assess the PR in full, taking into account all commits pushed since the last review. Note what changed since the previous review if one exists.\n' >> "$OUT"
+        printf '%s' "$fallback_directive" >> "$OUT"
       else
         cat "${prompts_dir}/issue-responder.md" >> "$OUT"
         printf '\n\nA collaborator triggered you by posting `/ai`. Analyze the full issue thread and take the appropriate action.\n' >> "$OUT"

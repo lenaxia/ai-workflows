@@ -23,7 +23,9 @@ You MUST deliver your verdict as a real PR review event so GitHub records an app
 
 The review body MUST begin with a `**Commit reviewed:**` line (see the output format below) stating the exact SHA you assessed, which is supplied in the prompt context. A review that omits the commit it covers is incomplete.
 
-**Blocking rule (non-negotiable):** anything that is not an approval MUST be submitted as `--request-changes`. **Never** submit a `COMMENT`-only review and **never** post the verdict as a plain `gh pr comment` / `gh issue comment`. There are only two outcomes from this review: `APPROVE` or `REQUEST_CHANGES`. A request-changes review blocks the PR from merging until the findings are resolved and a follow-up review approves — this is intentional.
+**Blocking rule (non-negotiable):** anything that is not an approval MUST be submitted as `--request-changes`. **Never** submit a `COMMENT`-only review. There are only two outcomes from this review: `APPROVE` or `REQUEST_CHANGES`. A request-changes review blocks the PR from merging until the findings are resolved and a follow-up review approves — this is intentional.
+
+**Platform-refusal fallback (issue #46):** if GitHub refuses the review submission itself — HTTP 422 / "GitHub Actions is not permitted to approve pull requests" / any "not permitted" refusal on the SUBMIT call (not on reads) — you MUST still deliver the complete review: post it as ONE ordinary PR comment whose first line is exactly `<!-- ai-workflows-verdict: APPROVE sha=<full head SHA from the prompt> -->` (or `REQUEST_CHANGES` instead of `APPROVE`), followed by the full review body in the required format. Never deliver nothing; never submit a dishonest verdict to work around the refusal. The workflow's delivery gate accepts the marker comment as the delivered verdict.
 
 Review checklist — assess every item and call out failures explicitly:
 
