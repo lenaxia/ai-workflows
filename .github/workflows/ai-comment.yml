@@ -103,17 +103,26 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Build prompt
+        # Also exports COMMAND / PR_HEAD_SHA / PR_CONTEXT to GITHUB_OUTPUT:
+        # the /review delivery tail below gates on them. Without that tail a
+        # /review that fails to submit its verdict concludes GREEN (the
+        # silent-success cell of this workflow) — pull_request events can be
+        # lost (LLMSafeSpaces #1704/#1707 outage class), making /review the
+        # recovery path, so its delivery must be gated like pr-review.yml.
+        id: build
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
           PR_URL: ${{ github.event.issue.pull_request.url }}
           EVENT_NAME: ${{ github.event_name }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           PR_HEAD_SHA=""
+          PR_CONTEXT=false
           if [ -n "$PR_URL" ] || [ "$EVENT_NAME" = "pull_request_review_comment" ]; then
+            PR_CONTEXT=true
             PR_HEAD_SHA="$(gh pr view "$ISSUE_NUMBER" --repo "$REPOSITORY" --json headRefOid -q .headRefOid 2>/dev/null || true)"
           fi
           export PR_HEAD_SHA
@@ -124,6 +133,11 @@ jobs:
             cat "$OUT_FILE"
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"
+          {
+            echo "COMMAND=${COMMAND}"
+            echo "PR_HEAD_SHA=${PR_HEAD_SHA}"
+            echo "PR_CONTEXT=${PR_CONTEXT}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run OpenCode
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
@@ -138,6 +152,66 @@ jobs:
           share: "false"
           mentions: /ai
           prompt: ${{ env.OPENCODE_PROMPT }}
+
+      - name: Check verdict delivered
+        # /review-on-PR delivery gate (two-channel logic in
+        # scripts/check-verdict.sh — mirrors pr-review.yml). Other commands
+        # and issue-context /review are out of scope: they have no PR verdict
+        # deliverable. Requires a resolved head SHA; the unresolvable case is
+        # owned by the verify gate below, which fails loudly on it.
+        id: check-verdict
+        if: always() && steps.build.outputs.COMMAND == '/review' && steps.build.outputs.PR_CONTEXT == 'true' && steps.build.outputs.PR_HEAD_SHA != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
+        run: .ai-workflows/scripts/check-verdict.sh
+
+      - name: Salvage dumped verdict
+        # Same upgrade pass as pr-review.yml: a dumped (or marker) comment
+        # becomes an OFFICIAL review whenever the platform allows it.
+        id: salvage
+        continue-on-error: true
+        if: always() && steps.build.outputs.COMMAND == '/review' && steps.build.outputs.PR_CONTEXT == 'true' && steps.build.outputs.PR_HEAD_SHA != '' && steps.check-verdict.outputs.delivered != 'review'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
+        run: .ai-workflows/scripts/salvage-verdict.sh
+
+      - name: Verify review submitted
+        # Source of truth for /review delivery: red only when NEITHER the
+        # official review channel NOR the marker-comment fallback posted.
+        # Runs even when PR_HEAD_SHA resolved empty — an unresolvable head
+        # SHA fails loudly here rather than silently skipping the gate.
+        if: always() && steps.build.outputs.COMMAND == '/review' && steps.build.outputs.PR_CONTEXT == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PR_HEAD_SHA}" ]; then
+            echo "ERROR: /review on PR #${PR_NUMBER} could not resolve the PR head SHA — cannot verify verdict delivery. Failing the job." >&2
+            exit 1
+          fi
+          delivered="$(.ai-workflows/scripts/check-verdict.sh | sed -n 's/^Verdict delivery channel: \([a-z]*\).*/\1/p')"
+          case "${delivered}" in
+            review)
+              echo "Official bot verdict on record against HEAD ${PR_HEAD_SHA} — delivered."
+              ;;
+            comment)
+              echo "Verdict delivered as a marker comment against HEAD ${PR_HEAD_SHA} (official review channel refused/unavailable — issue #46 fallback)."
+              ;;
+            *)
+              echo "ERROR: /review did not deliver a verdict on PR #${PR_NUMBER} against HEAD ${PR_HEAD_SHA} through either channel. Failing the job." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Post AI command reference (once per thread)
         env:

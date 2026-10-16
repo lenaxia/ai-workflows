@@ -27,6 +27,20 @@
 # only for custom bots.
 # `runs_on` defaults to ubuntu-latest; self-hosted consumers (e.g. gokore)
 # pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
+#
+# VERDICT-DELIVERY IDENTITY MATRIX (issue #46 / PR #49; full table in README
+# Lessons Learned #10). The verdict is ALWAYS submitted by github-actions[bot]
+# (GITHUB_TOKEN mode via the action's use_github_token input — the CLI never
+# reads a TOKEN env). Delivery is two-channel, gated by
+# scripts/check-verdict.sh: an official bot review pinned to the head SHA, OR
+# a bot comment carrying <!-- ai-workflows-verdict: <EVENT> sha=<head> -->
+# (the REQUIRED fallback when GitHub refuses the review event itself, e.g.
+# 422 "GitHub Actions is not permitted to approve pull requests"). Red
+# failure is reserved for "neither channel could post". PR authors who are
+# not collaborators (app bots, outside contributors) are stopped by a
+# pre-flight (scripts/author-permission.sh — same permission source as the
+# CLI's assertPermissions) with an explanatory comment, because the CLI's
+# unconditional assert would otherwise kill each LLM attempt pre-review.
 
 name: PR Review (reusable)
 
@@ -122,6 +136,41 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Pre-flight author permission
+        # `opencode github run` treats pull_request as a USER event and runs
+        # assertPermissions() unconditionally: getCollaboratorPermissionLevel
+        # (owner, repo, username: <PR author>) must return admin|write or the
+        # run dies BEFORE the LLM starts (~23s) — and the bounded retry dies
+        # identically. App-bot authors (not collaborators → 'none') and
+        # outside contributors always hit this. The pre-flight queries the
+        # SAME endpoint with the SAME pass-set (the same-source contract,
+        # owner ruling #6209918061 point 3) and fails OPEN on API errors, so
+        # the CLI assert remains the sole enforcement; its only job is to
+        # skip LLM attempts that are structurally doomed and leave a
+        # PR-visible explanation instead of a bare "no verdict delivered".
+        id: preflight
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: .ai-workflows/scripts/author-permission.sh
+
+      - name: Report unreviewable author
+        # The blocked cell of the identity matrix: no review outcome exists
+        # (the CLI refuses to run), so the honest outcome is a loud red plus
+        # a PR-visible explanation with the recovery path. The comment body
+        # deliberately avoids the review-shaped headers so salvage-verdict.sh
+        # can never mistake it for a dumped verdict.
+        if: always() && steps.preflight.outputs.author_allowed == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body \
+            "⚠️ Automated review could not run: PR author @${PR_AUTHOR} is not a repository collaborator, and the reviewer's startup permission assert (which checks the PR author for pull_request events) refuses non-collaborators before any review pass. To get this PR reviewed, a member with write access can post \`/review\` on this thread (the comment path checks the commenter instead). Job will be marked failed so the gap stays visible."
+
       - name: Build prompt
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -135,11 +184,18 @@ jobs:
             printf '\n\n---\n\n'
             cat .github/prompts/pr-review.md
             printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$PR_HEAD_SHA"
-            printf '\n\nA new pull request has been opened. Perform a thorough review and submit it as a formal GitHub pull request review via `gh pr review` (APPROVE only if there are zero findings; otherwise REQUEST_CHANGES, which is blocking). Never post the verdict as a plain PR comment and never use a COMMENT-only review.\n'
+            printf '\n\nA new pull request has been opened. Perform a thorough review and submit it as a formal GitHub pull request review via `gh pr review` (APPROVE only if there are zero findings; otherwise REQUEST_CHANGES, which is blocking). Never use a COMMENT-only review.\n'
+            printf '\nVerdict-delivery contract (overrides any conflicting instruction in the prompts above): FIRST always try to submit the verdict as a formal review event against the recorded head SHA. If GitHub refuses the review submission itself — HTTP 422 / "GitHub Actions is not permitted to approve pull requests" / any "not permitted" refusal on the SUBMIT call (not on reads) — you MUST still deliver the complete review: post it as ONE ordinary PR comment whose first line is exactly `<!-- ai-workflows-verdict: APPROVE sha=<full head SHA copied from the prompt> -->` (or REQUEST_CHANGES instead of APPROVE), followed by the full review body in the required format (**Commit reviewed:** line, ## Code Review, all sections, ### Verdict). Never deliver nothing. Never submit a COMMENT-only review, a dishonest verdict, or a verdict pinned to any other SHA.\n'
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"
 
       - name: Run OpenCode
+        # Gated on the pre-flight (author is a collaborator — otherwise the
+        # CLI's assertPermissions kills the run pre-LLM; see the pre-flight
+        # step). `!= 'false'` (not `== 'true'`) keeps the fail-open contract:
+        # an unset output from a crashed pre-flight proceeds exactly as the
+        # pre-fix behavior, with the CLI assert still enforcing.
+        if: steps.preflight.outputs.author_allowed != 'false'
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -164,54 +220,47 @@ jobs:
         continue-on-error: true
 
       - name: Check verdict delivered
-        # First-pass gate: was a verdict (APPROVED or CHANGES_REQUESTED) by
-        # github-actions[bot] recorded against this PR's HEAD commit? Sets the
-        # `delivered` output for the salvage/retry steps below; the FINAL
-        # gate (Verify review submitted) is the job's source of truth.
+        # First-pass gate: was a verdict delivered against this PR's HEAD
+        # commit through EITHER channel? Sets `delivered` (review|comment|
+        # false) for the salvage/retry steps below; the FINAL gate (Verify
+        # review submitted) is the job's source of truth. Two-channel logic
+        # (official bot review OR sha-pinned verdict-marker comment — the
+        # issue-#46 approve-blocked fallback) lives in scripts/check-verdict.sh
+        # so this step, the verify gate and the /review tail of ai-comment.yml
+        # all decide identically.
+        #
+        # continue-on-error: a transient API blip here must not stop the job —
+        # the step's output is then unset, salvage still runs (`!= 'review'`
+        # tolerates unset), and the verify gate re-runs the script fresh.
         id: check-verdict
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          # --paginate + per-page count aggregation: /pulls/N/reviews pages at
-          # 30, oldest first, so a busy PR with >30 reviews (or >30 stale
-          # reviews from prior commits) would hide the head-SHA verdict on a
-          # later page and false-negative here.
-          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
-            | awk '{s+=$1} END {print s+0}')"
-          if [ "${count}" -gt 0 ]; then
-            echo "delivered=true" >> "${GITHUB_OUTPUT}"
-            echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."
-          else
-            echo "delivered=false" >> "${GITHUB_OUTPUT}"
-            echo "No bot verdict against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — attempting salvage/retry."
-          fi
+        run: .ai-workflows/scripts/check-verdict.sh
 
       - name: Salvage dumped verdict
         id: salvage
-        # When opencode ran but its verdict landed as a plain issue comment
-        # instead of an official review (the historical posting-failure
-        # class — PRs like LLMSafeSpaces#870 produced ~24 dumped verdicts),
-        # recover the review-shaped comment body (## Code Review + ###
-        # Verdict) into an OFFICIAL review pinned to the head SHA. The
-        # verdict is derived from the comment's ### Verdict section so the
-        # review carries the correct event (APPROVED/CHANGES_REQUESTED);
-        # unparseable verdicts and stale-SHA comments are NOT salvaged
-        # (posting a COMMENT-only review would not satisfy the final gate and
-        # would only add noise). Logic lives in scripts/salvage-verdict.sh
-        # (unit-tested in tests/gharouter).
+        # Runs whenever the verdict was NOT delivered as an official review —
+        # including delivered=comment: a verdict-marker comment is a valid
+        # delivery, but if the platform merely refused the FIRST submit (a
+        # transient 422/5xx class) this pass upgrades the dumped/marker
+        # comment into an OFFICIAL review pinned to the head SHA, which is
+        # strictly better for consumers (branch protection reads reviews).
+        # When the platform truly refuses bot approvals, the salvage POST
+        # fails (422), the script exits non-zero after emitting
+        # salvaged=false, and continue-on-error lets the verify gate accept
+        # the marker comment as the delivered verdict.
         #
         # continue-on-error: a transient failure here (the GitHub API blip
         # class the retry exists for) must NOT stop the job — the retry step
         # below runs when salvaged != 'true' (the script emits salvaged=false
         # up-front, so an unset output from a crashed step also proceeds).
         continue-on-error: true
-        if: always() && steps.check-verdict.outputs.delivered == 'false'
+        if: always() && steps.check-verdict.outputs.delivered != 'review'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -227,13 +276,18 @@ jobs:
         # deliver, a final salvage pass runs, then the verify gate fails the
         # job visibly.
         #
-        # Condition: delivered == 'false' AND salvage did not succeed.
+        # Condition: delivered == 'false' AND salvage did not succeed. A
+        # comment-channel verdict (delivered == 'comment') skips the retry —
+        # the verdict IS delivered; re-running the LLM would burn a full
+        # review attempt to relearn what the marker comment already says.
+        #
         # `!= 'true'` (rather than `== 'false'`) tolerates the unset output
         # from a salvage step that crashed on a transient API failure, while
         # the delivered=='false' guard still skips this when the verdict
         # already landed (so a skipped/never-run salvage cannot re-run the
-        # LLM unnecessarily).
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        # LLM unnecessarily). The pre-flight gate keeps the retry from
+        # re-attempting a structurally refused author.
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -258,7 +312,7 @@ jobs:
         # comment, so an ungated run here would POST A DUPLICATE review.
         id: salvage-retry
         continue-on-error: true
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true'
+        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -267,15 +321,16 @@ jobs:
         run: .ai-workflows/scripts/salvage-verdict.sh
 
       - name: Verify review submitted
-        # Source of truth for the job's pass/fail: was a verdict (APPROVED or
-        # CHANGES_REQUESTED) by github-actions[bot] recorded against this PR's
-        # HEAD commit? If opencode crashed before delivering a verdict AND the
-        # salvage step had nothing to recover, this step fails the job even
-        # though the Run OpenCode steps' own exit status was masked via
-        # continue-on-error above. Conversely, if the verdict was posted
-        # (directly, salvaged, or retried) and opencode then died on its
-        # end-of-run push, this step passes — the correct outcome: the review
-        # IS the deliverable, and it landed.
+        # Source of truth for the job's pass/fail: was a verdict delivered
+        # against this PR's HEAD commit through EITHER channel — an official
+        # APPROVED/CHANGES_REQUESTED bot review, or (the issue-#46 fallback)
+        # a sha-pinned verdict-marker comment posted when GitHub refused the
+        # review event itself? Two-channel logic lives in
+        # scripts/check-verdict.sh. If opencode crashed before delivering AND
+        # salvage had nothing to recover, this step fails the job even though
+        # the Run OpenCode steps' own exit status was masked via
+        # continue-on-error above. Red failure is reserved for NEITHER
+        # channel having posted — never a silent green.
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -284,17 +339,19 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # --paginate + per-page count aggregation (see Check verdict
-          # delivered): a busy PR's head-SHA verdict can sit beyond page 1.
-          count="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --paginate \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED") and .commit_id == "'"${PR_HEAD_SHA}"'")] | length' \
-            | awk '{s+=$1} END {print s+0}')"
-          if [ "${count}" -eq 0 ]; then
-            echo "ERROR: no APPROVED/CHANGES_REQUESTED review by github-actions[bot] against HEAD ${PR_HEAD_SHA} found on PR #${PR_NUMBER}." >&2
-            echo "The opencode run did not deliver a verdict (attempts: 1 run + 1 salvage + 1 retry). Failing the job." >&2
-            exit 1
-          fi
-          echo "Found ${count} bot review(s) against HEAD ${PR_HEAD_SHA} on PR #${PR_NUMBER} — verdict delivered."
+          delivered="$(.ai-workflows/scripts/check-verdict.sh | sed -n 's/^Verdict delivery channel: \([a-z]*\).*/\1/p')"
+          case "${delivered}" in
+            review)
+              echo "Official bot verdict on record against HEAD ${PR_HEAD_SHA} — delivered."
+              ;;
+            comment)
+              echo "Verdict delivered as a marker comment against HEAD ${PR_HEAD_SHA} (official review channel refused/unavailable — issue #46 fallback)."
+              ;;
+            *)
+              echo "ERROR: no verdict delivered on PR #${PR_NUMBER} against HEAD ${PR_HEAD_SHA} through either channel (official review OR marker comment). Attempts: 1 run + 1 salvage + 1 retry. Failing the job." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Post AI command reference (once per thread)
         env:

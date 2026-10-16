@@ -120,23 +120,42 @@ func TestPrReviewToleratesOpenCodePushFailure(t *testing.T) {
 			"remain together. See issue #17 Bug A.")
 	}
 
-	// Each `want` is a substring that locks one essential property of the
-	// verify step. Use raw strings so backslashes/quotes in the YAML
-	// survive verbatim.
+	// Each `want` locks one essential property of the verify step. Since the
+	// two-channel rework (PR #49 / issue #46) the verdict-query properties
+	// (bot scope, APPROVED/CHANGES_REQUESTED, .commit_id pinning) live in
+	// scripts/check-verdict.sh — unit-pinned in tests/gharouter
+	// (checkverdict_test.go) — so this test locks the workflow-side
+	// properties plus a script-content cross-check below.
 	for _, want := range []string{
 		`if: always()`,                       // run even when Run OpenCode was tolerated as failure
-		`gh api`,                             // query the reviews endpoint directly
-		`github-actions[bot]`,                // scope to THIS bot's reviews, not a human's
-		`APPROVED`,                           // accept approval as a delivered verdict
-		`CHANGES_REQUESTED`,                  // accept blocking request-changes as a delivered verdict
-		`.commit_id ==`,                      // pin the verdict to THIS run's HEAD (skip stale reviews from prior commits)
+		`check-verdict.sh`,                   // decide via the shared two-channel gate script
+		`exit 1`,                             // fail the job when neither channel delivered
 		`github.event.pull_request.head.sha`, // ...and that HEAD comes from the event, not a stale cache
 	} {
 		if !strings.Contains(verifyStep, want) {
 			t.Errorf("pr-review.yml: 'Verify review submitted' step is missing %q.\n"+
 				"This substring locks one of the properties that make the verify step "+
-				"the source of truth for the job conclusion. See issue #17 Bug A.\n"+
+				"the source of truth for the job conclusion. See issue #17 Bug A and #49.\n"+
 				"Step body was:\n%s", want, verifyStep)
+		}
+	}
+
+	// Cross-check: the gate script itself must keep the verdict-query
+	// properties (they no longer appear inline in the workflow).
+	script, err := os.ReadFile(filepath.Join(invRoot(t), "scripts", "check-verdict.sh"))
+	if err != nil {
+		t.Fatalf("scripts/check-verdict.sh unreadable: %v", err)
+	}
+	for _, want := range []string{
+		`gh api`,
+		`github-actions[bot]`,
+		`APPROVED`,
+		`CHANGES_REQUESTED`,
+		`.commit_id ==`,
+		`ai-workflows-verdict:`,
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Errorf("scripts/check-verdict.sh is missing %q — the verify step delegates its verdict query to this script", want)
 		}
 	}
 }
@@ -1460,8 +1479,9 @@ func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
 	if checkStep == "" {
 		t.Fatal("pr-review.yml: no 'Check verdict delivered' step found — the salvage/retry flow requires it")
 	}
-	if !strings.Contains(checkStep, "delivered=false") {
-		t.Errorf("pr-review.yml: 'Check verdict delivered' must set delivered=false when no verdict is found")
+	if !strings.Contains(checkStep, "check-verdict.sh") {
+		t.Errorf("pr-review.yml: 'Check verdict delivered' must delegate to scripts/check-verdict.sh, " +
+			"which sets delivered=review|comment|false (the two-channel contract of #49/#46)")
 	}
 
 	salvageStep := stepBlock(body, "Salvage dumped verdict")
@@ -1472,9 +1492,9 @@ func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
 		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must tolerate its own failure (continue-on-error) so " +
 			"a transient gh/API blip cannot fail the job — the retry step owns the recovery")
 	}
-	if !strings.Contains(salvageStep, "delivered == 'false'") {
-		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must run only when delivered == 'false' " +
-			"(a delivered verdict needs no salvage)")
+	if !strings.Contains(salvageStep, `delivered != 'review'`) {
+		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must gate on delivered != 'review' " +
+			"(a comment-channel verdict still deserves an upgrade attempt to an official review)")
 	}
 	if !strings.Contains(salvageStep, "salvage-verdict.sh") {
 		t.Errorf("pr-review.yml: 'Salvage dumped verdict' must invoke scripts/salvage-verdict.sh")
