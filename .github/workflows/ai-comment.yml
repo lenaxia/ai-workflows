@@ -114,7 +114,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           PR_URL: ${{ github.event.issue.pull_request.url }}
           EVENT_NAME: ${{ github.event_name }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -165,7 +165,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
         run: .ai-workflows/scripts/check-verdict.sh
 
@@ -178,7 +178,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
         run: .ai-workflows/scripts/salvage-verdict.sh
 
@@ -191,7 +191,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ steps.build.outputs.PR_HEAD_SHA }}
         run: |
           set -euo pipefail

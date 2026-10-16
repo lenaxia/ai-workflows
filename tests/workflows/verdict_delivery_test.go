@@ -23,6 +23,8 @@
 package workflows
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -193,5 +195,66 @@ func TestAiCommentReviewTailGates(t *testing.T) {
 	gotVerify := stepIfDirective(verify)
 	if !strings.Contains(gotVerify, "COMMAND == '/review'") || !strings.Contains(gotVerify, "PR_CONTEXT == 'true'") {
 		t.Errorf("ai-comment.yml: verify gate must target /review on PRs, got %q", gotVerify)
+	}
+}
+
+// TestAiCommentReviewTailResolvesPRNumberForReviewCommentEvents pins the F1
+// regression (review round 2): pull_request_review_comment payloads carry
+// `comment` + `pull_request` and NO `issue` key, so a bare
+// github.event.issue.number resolves empty there — the tail's PR_NUMBER and
+// the build step's head-SHA lookup both break, and the verify gate false-reds
+// even when a verdict was delivered (violating "red is reserved for neither
+// channel could post"). Every PR-number reference in the tail path must use
+// the issue||pull_request fallback the concurrency group already uses.
+func TestAiCommentReviewTailResolvesPRNumberForReviewCommentEvents(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "ai-comment.yml")
+
+	build := stepBlock(body, "Build prompt")
+	if build == "" {
+		t.Fatal("ai-comment.yml: no 'Build prompt' step")
+	}
+	if !strings.Contains(build, "ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}") {
+		t.Errorf("ai-comment.yml: Build prompt ISSUE_NUMBER must fall back to github.event.pull_request.number — "+
+			"pull_request_review_comment payloads have no `issue` key, so the head-SHA lookup and the whole "+
+			"/review tail see an empty PR number and false-red despite a delivered verdict")
+	}
+
+	for _, name := range []string{"Check verdict delivered", "Salvage dumped verdict", "Verify review submitted"} {
+		block := stepBlock(body, name)
+		if block == "" {
+			t.Fatalf("ai-comment.yml: no '%s' step", name)
+		}
+		if !strings.Contains(block, "PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}") {
+			t.Errorf("ai-comment.yml: '%s' PR_NUMBER must fall back to github.event.pull_request.number (F1)", name)
+		}
+	}
+}
+
+// TestVerifyGatesParseCheckVerdictContract cross-pins the F2 contract: both
+// verify steps extract the channel from check-verdict.sh's stdout with
+// `sed -n 's/^Verdict delivery channel: .../p'` — the script's emit prefix
+// and the gates' sed pattern must not drift independently (a reword alone
+// would false-red every run fleet-wide).
+func TestVerifyGatesParseCheckVerdictContract(t *testing.T) {
+	const emitPrefix = "Verdict delivery channel: "
+	root := invRoot(t)
+
+	script, err := os.ReadFile(filepath.Join(root, "scripts", "check-verdict.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), `echo "Verdict delivery channel: `) {
+		t.Errorf("scripts/check-verdict.sh must keep the exact emit prefix %q — both verify gates parse it", emitPrefix)
+	}
+
+	for _, wf := range []string{"pr-review.yml", "ai-comment.yml"} {
+		body := readWorkflowFile(t, root, wf)
+		verify := stepBlock(body, "Verify review submitted")
+		if verify == "" {
+			t.Fatalf("%s: no 'Verify review submitted' step", wf)
+		}
+		if !strings.Contains(verify, "s/^Verdict delivery channel: \\([a-z]*\\).*/\\1/p") {
+			t.Errorf("%s: verify gate's sed must keep parsing the exact 'Verdict delivery channel: <channel>' prefix emitted by check-verdict.sh", wf)
+		}
 	}
 }

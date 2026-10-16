@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -236,14 +237,35 @@ func TestCheckVerdict_MarkerPaginates(t *testing.T) {
 }
 
 // The channel-resolution log lines are the production e2e proof (owner
-// ruling point 4): the run log must show BOTH channels being evaluated so
-// a delivered verdict demonstrably exercises the OR-comment path.
+// ruling point 4) AND the gate-parsed contract (review round 2, F2): both
+// verify steps extract the channel via sed from the EXACT line
+// `Verdict delivery channel: <channel>` — pin the full format for all three
+// channels so a cosmetic reword fails HERE, not as a fleet-wide false-red.
 func TestCheckVerdict_EmitsChannelResolutionLogs(t *testing.T) {
-	m := newCheckMockGH(t, []string{"[" + markerComment("APPROVE", headSHA) + "]"}, "[]")
-	out, _ := runCheckVerdict(t, m)
-	for _, want := range []string{"review", "comment"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output must mention channel %q for production proof, got:\n%s", want, out)
-		}
+	cases := []struct {
+		name    string
+		pages   []string
+		reviews string
+		want    string
+	}{
+		{"review", []string{"[]"}, `[{"user":{"login":"github-actions[bot]"},"state":"APPROVED","commit_id":"` + headSHA + `"}]`, "review"},
+		{"comment", []string{"[" + markerComment("APPROVE", headSHA) + "]"}, "[]", "comment"},
+		{"false", []string{"[]"}, "[]", "false"},
+	}
+	reLine := regexp.MustCompile(`(?m)^Verdict delivery channel: (review|comment|false)\b`)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newCheckMockGH(t, tc.pages, tc.reviews)
+			out, _ := runCheckVerdict(t, m)
+			matches := reLine.FindAllStringSubmatch(out, -1)
+			if len(matches) == 0 {
+				t.Fatalf("output must contain the exact gate-parsed line 'Verdict delivery channel: <channel>' (verify steps sed-parse this prefix), got:\n%s", out)
+			}
+			for _, mm := range matches {
+				if mm[1] != tc.want {
+					t.Errorf("channel line must report %q, got %q\noutput:\n%s", tc.want, mm[1], out)
+				}
+			}
+		})
 	}
 }
