@@ -1,0 +1,17 @@
+# Consumer config for lenaxia/functions.
+#
+# Fission serverless functions for the trading system and other homelab
+# automation. Uses ai-workflows for review plumbing only (formal blocking
+# review, route-command.sh, footer). Prompts are functions-specific: Fission
+# function lifecycle, Python entry points, secret mounts, CloudNativePG.
+
+name: functions
+version: v0.2.0
+
+vars:
+  project_name: functions
+  rules_doc: README.md
+
+forked: []
+
+blocks: []
