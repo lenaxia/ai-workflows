@@ -128,6 +128,34 @@ func TestRunShReinstallsOnVersionDrift(t *testing.T) {
 	}
 }
 
+// TestRunShFailsWhenFreshInstallReportsWrongVersion: after a fresh download,
+// a binary not reporting OC_RELEASE must abort the run — a wrong/clobbered/
+// stale release asset may not execute silently (the drift check establishes
+// the version contract; this pins its enforcement on the install path).
+func TestRunShFailsWhenFreshInstallReportsWrongVersion(t *testing.T) {
+	dir := t.TempDir()
+	stubBinDir(t, dir, "opencode-v0.0.1-other") // tarball serves the WRONG version
+	home := filepath.Join(dir, "home")
+
+	ocDir := filepath.Join(home, ".opencode", "bin")
+	if err := os.MkdirAll(ocDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", runShPath(t))
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=" + filepath.Join(dir, "bin") + ":/usr/bin:/bin",
+		"OC_RELEASE=opencode-v9.9.9-test.1",
+	}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("run.sh exited 0 although the freshly installed binary reports the wrong version — the post-install contract is unenforced.\noutput:\n%s", out)
+	}
+	if !strings.Contains(string(out), "::error::") {
+		t.Errorf("expected a ::error:: diagnostic on post-install version mismatch; output:\n%s", out)
+	}
+}
+
 // TestRunShSkipsInstallWhenCurrent: a binary already reporting OC_RELEASE
 // must NOT re-download (~50MB per run for nothing). Guards against
 // over-correcting the drift fix into an unconditional install.

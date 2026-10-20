@@ -68,5 +68,14 @@ if [ "$need_install" = "1" ]; then
   tar -xzf /tmp/opencode.tar.gz -C "$OC_DIR"
 fi
 
+# Post-install contract: the executed binary MUST report OC_RELEASE. A
+# wrong/clobbered/stale release asset otherwise runs silently — the drift
+# check above establishes the contract; this enforces it on the only path
+# that was still unchecked (fresh install).
+if [ "$("$OC_BIN" --version 2>/dev/null || true)" != "$OC_RELEASE" ]; then
+  echo "::error::self-hosted opencode at $OC_BIN reports '$("$OC_BIN" --version 2>/dev/null || echo nothing)' but OC_RELEASE is ${OC_RELEASE} — the release asset is wrong for this pin. Rebuild via the 'Build OpenCode CLI (patched)' workflow."
+  exit 1
+fi
+
 "$OC_BIN" --version
 exec "$OC_BIN" github run

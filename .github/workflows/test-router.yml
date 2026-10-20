@@ -11,6 +11,7 @@ on:
     paths:
       - 'scripts/route-command.sh'
       - 'scripts/salvage-verdict.sh'
+      - 'scripts/opencode-cli/**'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'
@@ -20,6 +21,7 @@ on:
     paths:
       - 'scripts/route-command.sh'
       - 'scripts/salvage-verdict.sh'
+      - 'scripts/opencode-cli/**'
       - 'tests/**'
       - 'go.mod'
       - '.github/workflows/**'

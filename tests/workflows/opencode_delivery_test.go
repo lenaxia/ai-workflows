@@ -113,6 +113,100 @@ func TestTokenBypassPatchShipsBypassSemantics(t *testing.T) {
 	}
 }
 
+// openCodeSites enumerates every Run OpenCode step (file + step name) that
+// must carry the full self-hosted env contract.
+var openCodeSites = []struct {
+	wf   string
+	step string
+}{
+	{"pr-review.yml", "Run OpenCode"},
+	{"pr-review.yml", "Run OpenCode (bounded retry)"},
+	{"ai-comment.yml", "Run OpenCode"},
+	{"issue-opened.yml", "Run OpenCode"},
+	{"renovate-analysis.yml", "Run OpenCode"},
+}
+
+// TestOpenCodeSitesCarryEnvContract pins the composite-action env contract on
+// every Run OpenCode site. The self-hosted runner (run.sh) execs
+// `opencode github run`, which reads MODEL/PROMPT/SHARE/USE_GITHUB_TOKEN from
+// the step env exactly as the replaced composite exported them — dropping any
+// of these lines changes CLI behavior silently (e.g. no USE_GITHUB_TOKEN
+// means OIDC app-token mode). Substring pins mirror
+// TestPrReviewToleratesOpenCodePushFailure's stepBlock pattern.
+func TestOpenCodeSitesCarryEnvContract(t *testing.T) {
+	root := workflowRoot(t)
+	for _, site := range openCodeSites {
+		body, err := os.ReadFile(filepath.Join(root, ".github", "workflows", site.wf))
+		if err != nil {
+			t.Fatalf("read %s: %v", site.wf, err)
+		}
+		block := stepBlock(string(body), site.step)
+		if block == "" {
+			t.Errorf("%s: no '%s' step found — self-hosted CLI site is gone.", site.wf, site.step)
+			continue
+		}
+		for _, want := range []string{
+			"MODEL: openai-compatible/default",
+			`PROMPT: ${{ env.OPENCODE_PROMPT }}`,
+			`USE_GITHUB_TOKEN: "true"`,
+			`SHARE: "false"`,
+			`GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`,
+			"run: .ai-workflows/scripts/opencode-cli/run.sh",
+		} {
+			if !strings.Contains(block, want) {
+				t.Errorf("%s '%s' step is missing %q — the env contract the CLI depends on is broken.", site.wf, site.step, want)
+			}
+		}
+	}
+
+	// ai-comment's site additionally carries the /ai mention trigger.
+	body, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ai-comment.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if block := stepBlock(string(body), "Run OpenCode"); !strings.Contains(block, "MENTIONS: /ai") {
+		t.Error("ai-comment.yml 'Run OpenCode' step is missing `MENTIONS: /ai` — the /ai command trigger is broken.")
+	}
+}
+
+// TestOpenCodeTargetsMatchBuildMatrix ties run.sh's OC_TARGET dispatch arms to
+// the build workflow's matrix targets: a target shipped by one but not the
+// other 404s at install time in every consumer.
+func TestOpenCodeTargetsMatchBuildMatrix(t *testing.T) {
+	root := workflowRoot(t)
+
+	sh := runSh(t)
+	armRE := regexp.MustCompile(`OC_TARGET="(linux-[a-z0-9]+)"`)
+	shTargets := map[string]bool{}
+	for _, m := range armRE.FindAllStringSubmatch(sh, -1) {
+		shTargets[m[1]] = true
+	}
+	if len(shTargets) == 0 {
+		t.Fatal("scripts/opencode-cli/run.sh: no OC_TARGET dispatch arms found — the runner would reject every platform.")
+	}
+
+	b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "build-opencode-cli.yml"))
+	if err != nil {
+		t.Fatalf("read build-opencode-cli.yml: %v", err)
+	}
+	matRE := regexp.MustCompile(`target: (linux-[a-z0-9]+)`)
+	matTargets := map[string]bool{}
+	for _, m := range matRE.FindAllStringSubmatch(string(b), -1) {
+		matTargets[m[1]] = true
+	}
+
+	for target := range shTargets {
+		if !matTargets[target] {
+			t.Errorf("run.sh dispatches to %s but build-opencode-cli.yml's matrix never builds it — installs would 404 on that platform.", target)
+		}
+	}
+	for target := range matTargets {
+		if !shTargets[target] {
+			t.Errorf("build-opencode-cli.yml builds %s but run.sh has no dispatch arm for it — the asset can never install.", target)
+		}
+	}
+}
+
 // TestSelfPrReviewTrustedBotsWired asserts the self-dogfood caller actually
 // exercises the trusted_app_bots path (reference adoption for #57/#59) —
 // without a live consumer the input would be dead code again.

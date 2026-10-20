@@ -1598,11 +1598,13 @@ func TestTestRouterPathsCoverGuardedTrees(t *testing.T) {
 	// Every guarded tree must appear in BOTH filters.
 	for _, want := range []string{
 		"scripts/route-command.sh", // router suite
-		"tests/**",                 // all suites incl. tests/workflows
-		"go.mod",                   // toolchain/dependency changes
-		".github/workflows/**",     // invariant suite's subject
-		"templates/**",             // aisync suite's subject
-		"consumers/**",             // aisync suite's subject
+		"scripts/salvage-verdict.sh",
+		"scripts/opencode-cli/**", // runsh suite (tests/gharouter/runsh_test.go)
+		"tests/**",                // all suites incl. tests/workflows
+		"go.mod",                  // toolchain/dependency changes
+		".github/workflows/**",    // invariant suite's subject
+		"templates/**",            // aisync suite's subject
+		"consumers/**",            // aisync suite's subject
 	} {
 		for _, trigger := range []string{"push:", "pull_request:"} {
 			found := false

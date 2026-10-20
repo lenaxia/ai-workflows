@@ -156,15 +156,17 @@ jobs:
         # App-bot PR authors structurally return 'none' from the collaborator
         # check (apps are not collaborators), so the CLI assert refuses them
         # before the LLM starts — even when the app holds contents:write via
-        # its installation. The assert's only bypass is the TOKEN env var
-        # (useEnvGithubToken() reads process.env["TOKEN"]; the action's
-        # use_github_token input maps to USE_GITHUB_TOKEN, which nothing in
-        # the CLI consumes at the pinned ref). When the PR author is on the
-        # caller's trusted_app_bots list, export TOKEN=<job token> so the
-        # assert is bypassed FOR THAT ACTOR ONLY; otherwise the output is
-        # empty (falsy in JS) and the assert keeps enforcing. Fail-closed on
-        # malformed list JSON. Trust decision stays caller-owned: this input
-        # is the ONLY way a bot gets in.
+        # its installation. Two distinct env vars, often conflated:
+        # USE_GITHUB_TOKEN selects GITHUB_TOKEN auth mode in the live CLI
+        # handler (normalizeUseGithubToken reads it — it is the mode switch
+        # every Run OpenCode step sets); TOKEN is the assert-bypass trust
+        # marker, honored ONLY by the self-hosted patched build
+        # (scripts/opencode-cli/0001; the released CLI never reads it).
+        # When the PR author is on the caller's trusted_app_bots list, this
+        # step exports TOKEN=<job token> so the assert is bypassed FOR THAT
+        # ACTOR ONLY; otherwise the output is empty (falsy in JS) and the
+        # assert keeps enforcing. Fail-closed on malformed list JSON. Trust
+        # decision stays caller-owned: this input is the ONLY way a bot gets in.
         id: authmode
         env:
           ACTOR: ${{ github.event.pull_request.user.login }}
