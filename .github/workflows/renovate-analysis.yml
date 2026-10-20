@@ -148,20 +148,26 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run OpenCode
-        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
+        # Self-hosted patched CLI via .ai-workflows/scripts/opencode-cli/run.sh
+        # (replaces anomalyco/opencode/github@<sha> — the released CLI's live
+        # github handler refuses app-bot actors; see scripts/opencode-cli/).
+        # Env contract mirrors the composite's inner step. MODEL resolves via
+        # the openai-compatible provider declared in /opencode.json (custom
+        # OPENAI_API_BASE); the model id `default` maps to {env:OPENAI_MODEL}.
         env:
+          MODEL: openai-compatible/default
+          AGENT: ""
+          SHARE: "false"
+          PROMPT: ${{ env.OPENCODE_PROMPT }}
+          USE_GITHUB_TOKEN: "true"
+          MENTIONS: ""
+          VARIANT: ""
+          OIDC_BASE_URL: ""
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # Use the openai-compatible provider declared in /opencode.json
-          # (custom OPENAI_API_BASE). The model id is `default` which resolves
-          # to {env:OPENAI_MODEL} at runtime via the config file.
-          model: openai-compatible/default
-          use_github_token: "true"
-          share: "false"
-          prompt: ${{ env.OPENCODE_PROMPT }}
+        run: .ai-workflows/scripts/opencode-cli/run.sh
         # NO continue-on-error here, deliberately: unlike pr-review.yml there
         # is no separate verify step (no single deliverable to check — the
         # deliverable is N comments across N PRs, and the prompt's own

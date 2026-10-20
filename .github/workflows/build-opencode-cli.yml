@@ -1,0 +1,137 @@
+# Build OpenCode CLI (patched) — compiles the TOKEN-mode assertPermissions
+# bypass into a pinned upstream opencode release and publishes the binary as
+# an asset on THIS repo, so the reusable workflows can self-host the CLI
+# instead of consuming anomalyco/opencode/github@<sha>.
+#
+# Why: the opencode CLI's assertPermissions() (live path:
+# packages/opencode/src/cli/cmd/github.handler.ts) refuses GitHub App bot
+# actors unconditionally — getCollaboratorPermissionLevel structurally returns
+# "none" for app bots (they are not collaborators), so no PR/comment authored
+# by a trusted app bot can ever trigger the AI workflows, regardless of the
+# app installation's actual permissions. The only bypass (TOKEN env var) exists
+# in the legacy node entrypoint (github/index.ts useEnvGithubToken()) which the
+# composite action never executes. See issues #56 (root cause) and #59
+# (job-level skip). scripts/trusted-bot-auth.sh exports TOKEN only for actors
+# on the caller's trusted_app_bots allowlist — this build makes the CLI honor
+# it.
+#
+# Delivery: the asset opencode-linux-x64.tar.gz is attached to a release named
+# $release_tag (an `opencode-*` tag — deliberately outside propagate.yml's
+# `tags: ['v*']` trigger so building never fires consumer sync). The reusable
+# workflows (pr-review/ai-comment/issue-opened/renovate-analysis) download it
+# pinned by that literal. Re-run this workflow and bump the literal in the
+# same PR to roll the CLI forward.
+#
+# Reproducibility: upstream ref is pinned (v1.19.3), the patch is a committed
+# git-apply patch file verified against that ref, and the build is single-
+# target (linux-x64, the fleet's runner platform; --skip-embed-web-ui drops
+# the embedded share-UI bundle the workflows never use — share: "false").
+
+name: Build OpenCode CLI (patched)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (e.g. opencode-v1.19.4-aiwf.1) — must match the OC_RELEASE literal in the reusable workflows"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # One leg per supported runner platform (run.sh's uname dispatch must
+    # always find an asset). --single builds for the host platform.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-latest
+            target: linux-x64
+          - runs_on: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout ai-workflows (for the patch)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Checkout upstream opencode (pinned v1.19.3)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: anomalyco/opencode
+          ref: v1.19.3
+          path: opencode
+          fetch-depth: 1
+
+      - name: Apply TOKEN-mode assert bypass patch
+        run: |
+          set -euo pipefail
+          for p in "$GITHUB_WORKSPACE"/scripts/opencode-cli/*.patch; do
+            git -C opencode apply --check "$p"
+            git -C opencode apply "$p"
+          done
+          echo "Patched assertPermissions now reads:"
+          grep -B2 -A2 'skipped (using github token)' opencode/packages/opencode/src/cli/cmd/github.handler.ts
+
+      - name: Setup Node
+        # node-gyp (pulled in via bunx for native install scripts) needs
+        # Node >= 22; runner images may ship older. Mirrors upstream's
+        # .github/actions/setup-bun.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Resolve Bun version
+        id: bunver
+        run: echo "v=$(node -p "require('./package.json').packageManager.split('@')[1]")" >> "$GITHUB_OUTPUT"
+        working-directory: opencode
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ steps.bunver.outputs.v }}
+
+      - name: Install dependencies
+        # setuptools for distutils compat inside bun's native install scripts
+        # (mirrors upstream setup-bun). Monorepo-wide install: the CLI build
+        # imports workspace packages (@opencode-ai/script, generate.ts).
+        run: |
+          python3 -m pip install setuptools || true
+          bun install
+        working-directory: opencode
+
+      - name: Build CLI (single target for ${{ matrix.target }})
+        run: bun ./packages/opencode/script/build.ts --single --skip-embed-web-ui
+        working-directory: opencode
+        env:
+          OPENCODE_VERSION: ${{ inputs.release_tag }}
+          OPENCODE_RELEASE: "true"
+          # build.ts archives each target (dist/<target>.tar.gz) and would
+          # then `gh release upload v<version> ./dist/*.zip ...` to GH_REPO —
+          # wrong tag, wrong repo, and the empty *.zip glob is fatal on
+          # single-target linux builds. Patch 0002 gates it behind this env;
+          # the Publish step below uploads with our own naming.
+          OPENCODE_SKIP_UPLOAD: "1"
+
+      - name: Smoke test binary
+        run: ./packages/opencode/dist/opencode-${{ matrix.target }}/bin/opencode --version
+        working-directory: opencode
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ASSET="opencode/packages/opencode/dist/opencode-${TARGET}.tar.gz"
+          [ -f "$ASSET" ]
+          sha256sum "$ASSET"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --target "$GITHUB_SHA" \
+            --notes "Self-hosted opencode CLI for the reusable workflows. Upstream: anomalyco/opencode @ v1.19.3 + scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch (TOKEN-mode assertPermissions bypass — trusted GitHub App bot actors; ai-workflows #56/#59). Targets: linux-x64, linux-arm64 (embedded web UI skipped — workflows run share: false). Rebuild via the 'Build OpenCode CLI (patched)' workflow dispatch."
+          gh release upload "$TAG" "$ASSET" --clobber

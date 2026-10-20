@@ -669,11 +669,12 @@ dogfood-bump job are all locked by
 ### 10. Verdict-delivery identity matrix + two-channel fallback (#49 / #46)
 
 **Who posts the verdict.** The reviewer always runs in GITHUB_TOKEN mode
-(`use_github_token: "true"` — the composite action's `USE_GITHUB_TOKEN` env;
-the CLI never reads a `TOKEN` env, which is why #49 round 1's `TOKEN:` line
-was dead code). Every verdict — review event or comment — is submitted by
-`github-actions[bot]`. The App-installation-token mode (OIDC exchange) exists
-in the action but is not used by these workflows.
+(`USE_GITHUB_TOKEN`; the RELEASED CLI never reads a `TOKEN` env, which is why
+#49 round 1's `TOKEN:` line was dead code — the self-hosted patched CLI at
+`scripts/opencode-cli/` now reads it, but ONLY as the trusted-bot
+assert-bypass marker, never as API auth). Every verdict — review event or
+comment — is submitted by `github-actions[bot]`. The App-installation-token
+mode (OIDC exchange) exists in the CLI but is not used by these workflows.
 
 **Two-channel delivery.** `scripts/check-verdict.sh` is the single gate used
 by pr-review.yml's check/verify steps AND ai-comment.yml's `/review` tail.
