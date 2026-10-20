@@ -853,11 +853,12 @@ func TestPropagateHasDogfoodBumpJob(t *testing.T) {
 	if !hasJob(body, "dogfood-bump") {
 		t.Fatal("propagate.yml: no 'dogfood-bump' job found.\n" +
 			"This job bumps this repo's own dogfood pin sites (self-pr-review.yml, " +
-			"self-ai-comment.yml, consumers/ai-workflows.yaml) on every tag push. Without it, " +
+			"self-ai-comment.yml, self-renovate-analysis.yml, self-issue-opened.yml, " +
+			"consumers/ai-workflows.yaml) on every tag push. Without it, " +
 			"those pins silently drift - they were stuck at v0.2.1 across v0.2.2/v0.2.3 until PR #20 " +
 			"caught them up manually.")
 	}
-	// The job must touch all three pin sites guarded by
+	// The job must touch every dogfood pin site guarded by
 	// TestDogfoodPinsAreConsistent, plus regenerate rendered prompts guarded
 	// by TestRenderedPromptsMatchTemplates.
 	jobBlock := extractJobBlock(body, "dogfood-bump")
@@ -869,6 +870,7 @@ func TestPropagateHasDogfoodBumpJob(t *testing.T) {
 		`self-pr-review.yml`,
 		`self-ai-comment.yml`,
 		`self-renovate-analysis.yml`,
+		`self-issue-opened.yml`,
 		`ai-sync render`,
 	} {
 		if !strings.Contains(jobBlock, want) {
