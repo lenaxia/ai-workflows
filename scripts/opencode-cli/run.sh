@@ -30,7 +30,9 @@
 
 set -euo pipefail
 
-OC_RELEASE="opencode-v1.19.4-aiwf.1"
+# Injectable for tests (tests/gharouter/runsh_test.go); the default is THE
+# pin — bump it in the same PR that rebuilds the release.
+OC_RELEASE="${OC_RELEASE:-opencode-v1.19.4-aiwf.1}"
 
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64)  OC_TARGET="linux-x64"   ;;
@@ -44,7 +46,21 @@ esac
 OC_DIR="$HOME/.opencode/bin"
 OC_BIN="$OC_DIR/opencode"
 
+# Install if missing OR stale. Presence alone is not enough: self-hosted
+# runners (gokore) persist $HOME across jobs, and the replaced composite
+# re-keyed its cache on the version — without this check a bumped OC_RELEASE
+# would silently keep executing the old binary on those runners, defeating
+# the documented bump procedure. `opencode --version` reports the
+# OPENCODE_VERSION the build was dispatched with, i.e. the release tag.
+need_install=0
 if [ ! -x "$OC_BIN" ]; then
+  need_install=1
+elif [ "$("$OC_BIN" --version 2>/dev/null || true)" != "$OC_RELEASE" ]; then
+  echo "::warning::self-hosted opencode at $OC_BIN is stale (expected $OC_RELEASE) — reinstalling."
+  need_install=1
+fi
+
+if [ "$need_install" = "1" ]; then
   mkdir -p "$OC_DIR"
   echo "Installing self-hosted opencode ${OC_RELEASE} (${OC_TARGET})..."
   curl -fsSL -o /tmp/opencode.tar.gz \

@@ -30,8 +30,10 @@
 #
 # VERDICT-DELIVERY IDENTITY MATRIX (issue #46 / PR #49; full table in README
 # Lessons Learned #10). The verdict is ALWAYS submitted by github-actions[bot]
-# (GITHUB_TOKEN mode via the action's use_github_token input — the CLI never
-# reads a TOKEN env). Delivery is two-channel, gated by
+# (GITHUB_TOKEN mode via USE_GITHUB_TOKEN; the RELEASED CLI never reads a
+# TOKEN env — the self-hosted patched CLI at scripts/opencode-cli/ honors it
+# solely as the trusted-bot assert bypass, never as API auth). Delivery is
+# two-channel, gated by
 # scripts/check-verdict.sh: an official bot review pinned to the head SHA, OR
 # a bot comment carrying <!-- ai-workflows-verdict: <EVENT> sha=<head> -->
 # (the REQUIRED fallback when GitHub refuses the review event itself, e.g.
@@ -61,7 +63,7 @@ on:
         required: false
         default: ubuntu-latest
       trusted_app_bots:
-        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they authors is refused pre-LLM. Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they author is refused pre-LLM. Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
         type: string
         required: false
         default: "[]"
