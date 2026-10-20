@@ -77,9 +77,18 @@ jobs:
     # either trivial or out-of-scope for code review. To review a specific
     # bot PR, the maintainer can dispatch the workflow manually.
     #
-    # To extend this list for your org's other bots, copy this `if:` block
-    # into your caller workflow's job and add the bot username.
-    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]","ai-workflows-propagation[bot]"]'), github.event.pull_request.user.login) }}
+    # EXCEPTION (#59): a bot listed in the caller's trusted_app_bots input is
+    # NEVER skipped — that list is a deliberate per-bot trust decision, and
+    # the authmode step + patched CLI (TOKEN-mode assert bypass) handle it
+    # end to end. Skipping here would make trusted_app_bots unreachable from
+    # job-level (the exact #59 defect: ai-workflows-propagation[bot] sat in
+    # this array while every other layer admitted it). Default-skipped bots
+    # that a repo wants reviewed must be added to trusted_app_bots, not
+    # removed from this array.
+    #
+    # To extend the default-skip list for your org's other bots, copy this
+    # `if:` block into your caller workflow's job and add the bot username.
+    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) || contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login) }}
     concurrency:
       group: ai-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -226,24 +235,28 @@ jobs:
         # step). `!= 'false'` (not `== 'true'`) keeps the fail-open contract:
         # an unset output from a crashed pre-flight proceeds exactly as the
         # pre-fix behavior, with the CLI assert still enforcing.
+        #
+        # Self-hosted patched CLI via .ai-workflows/scripts/opencode-cli/run.sh
+        # (replaces anomalyco/opencode/github@<sha> — the released CLI's live
+        # github handler refuses app-bot actors; see scripts/opencode-cli/).
+        # Env contract mirrors the composite's inner step. The trusted-bot
+        # TOKEN bypass rides GITHUB_ENV from the authmode step, which a plain
+        # run step receives natively.
         if: steps.preflight.outputs.author_allowed != 'false'
-        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
+          MODEL: openai-compatible/default
+          AGENT: ""
+          SHARE: "false"
+          PROMPT: ${{ env.OPENCODE_PROMPT }}
+          USE_GITHUB_TOKEN: "true"
+          MENTIONS: ""
+          VARIANT: ""
+          OIDC_BASE_URL: ""
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # NOTE: no step-level TOKEN here. A step env on the `uses:` call is
-          # DROPPED by the composite action's inner "Run opencode" step (it
-          # declares its own env: block, which excludes caller step env) —
-          # verified live in run 39373330689. The trusted-bot TOKEN bypass
-          # rides GITHUB_ENV from the authmode step instead, which crosses
-          # every composite boundary (same path OPENCODE_PROMPT takes).
-        with:
-          model: openai-compatible/default
-          use_github_token: "true"
-          share: "false"
-          prompt: ${{ env.OPENCODE_PROMPT }}
+        run: .ai-workflows/scripts/opencode-cli/run.sh
         # opencode unconditionally runs a `git push` at end-of-run to persist
         # its session/snapshot branch. The consumer checkout persists a
         # contents: read credential (required for the startup branch fetch on
@@ -325,20 +338,20 @@ jobs:
         # LLM unnecessarily). The pre-flight gate keeps the retry from
         # re-attempting a structurally refused author.
         if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
-        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
+          MODEL: openai-compatible/default
+          AGENT: ""
+          SHARE: "false"
+          PROMPT: ${{ env.OPENCODE_PROMPT }}
+          USE_GITHUB_TOKEN: "true"
+          MENTIONS: ""
+          VARIANT: ""
+          OIDC_BASE_URL: ""
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No step-level TOKEN here either — the bypass rides GITHUB_ENV
-          # from the authmode step (job-wide, crosses the composite boundary
-          # for this retry exactly as for the first run).
-        with:
-          model: openai-compatible/default
-          use_github_token: "true"
-          share: "false"
-          prompt: ${{ env.OPENCODE_PROMPT }}
+        run: .ai-workflows/scripts/opencode-cli/run.sh
         continue-on-error: true
 
       - name: Salvage dumped verdict (after retry)

@@ -41,7 +41,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # One leg per supported runner platform (run.sh's uname dispatch must
+    # always find an asset). --single builds for the host platform.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: ubuntu-latest
+            target: linux-x64
+          - runs-on: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 90
     steps:
       - name: Checkout ai-workflows (for the patch)
@@ -58,8 +68,10 @@ jobs:
       - name: Apply TOKEN-mode assert bypass patch
         run: |
           set -euo pipefail
-          git -C opencode apply --check "$GITHUB_WORKSPACE/scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch"
-          git -C opencode apply "$GITHUB_WORKSPACE/scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch"
+          for p in "$GITHUB_WORKSPACE"/scripts/opencode-cli/*.patch; do
+            git -C opencode apply --check "$p"
+            git -C opencode apply "$p"
+          done
           echo "Patched assertPermissions now reads:"
           grep -B2 -A2 'skipped (using github token)' opencode/packages/opencode/src/cli/cmd/github.handler.ts
 
@@ -90,31 +102,36 @@ jobs:
           bun install
         working-directory: opencode
 
-      - name: Build CLI (linux-x64 single target)
+      - name: Build CLI (single target for ${{ matrix.target }})
         run: bun ./packages/opencode/script/build.ts --single --skip-embed-web-ui
         working-directory: opencode
         env:
           OPENCODE_VERSION: ${{ inputs.release_tag }}
           OPENCODE_RELEASE: "true"
+          # build.ts archives each target (dist/<target>.tar.gz) and would
+          # then `gh release upload v<version> ./dist/*.zip ...` to GH_REPO —
+          # wrong tag, wrong repo, and the empty *.zip glob is fatal on
+          # single-target linux builds. Patch 0002 gates it behind this env;
+          # the Publish step below uploads with our own naming.
+          OPENCODE_SKIP_UPLOAD: "1"
 
       - name: Smoke test binary
-        run: ./packages/opencode/dist/opencode-linux-x64/bin/opencode --version
+        run: ./packages/opencode/dist/${{ matrix.target }}/bin/opencode --version
         working-directory: opencode
 
       - name: Publish release asset
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          STAGE="$(mktemp -d)"
-          cp opencode/packages/opencode/dist/opencode-linux-x64/bin/opencode "$STAGE/opencode"
-          chmod +x "$STAGE/opencode"
-          tar -czf opencode-linux-x64.tar.gz -C "$STAGE" opencode
-          sha256sum opencode-linux-x64.tar.gz
+          ASSET="opencode/packages/opencode/dist/opencode-${TARGET}.tar.gz"
+          [ -f "$ASSET" ]
+          sha256sum "$ASSET"
+          gh release view "$TAG" >/dev/null 2>&1 || \
           gh release create "$TAG" \
             --title "$TAG" \
             --target "$GITHUB_SHA" \
-            --notes "Self-hosted opencode CLI for the reusable workflows. Upstream: anomalyco/opencode @ v1.19.3 + scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch (TOKEN-mode assertPermissions bypass — trusted GitHub App bot actors; ai-workflows #56/#59). Single target: linux-x64, embedded web UI skipped (workflows run share: false). Rebuild via the 'Build OpenCode CLI (patched)' workflow dispatch." \
-            opencode-linux-x64.tar.gz || \
-          gh release upload "$TAG" opencode-linux-x64.tar.gz --clobber
+            --notes "Self-hosted opencode CLI for the reusable workflows. Upstream: anomalyco/opencode @ v1.19.3 + scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch (TOKEN-mode assertPermissions bypass — trusted GitHub App bot actors; ai-workflows #56/#59). Targets: linux-x64, linux-arm64 (embedded web UI skipped — workflows run share: false). Rebuild via the 'Build OpenCode CLI (patched)' workflow dispatch."
+          gh release upload "$TAG" "$ASSET" --clobber

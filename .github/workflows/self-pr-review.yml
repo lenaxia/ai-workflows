@@ -33,3 +33,9 @@ jobs:
     with:
       version: v0.2.19
       project_name: ai-workflows
+      # Reference adoption of trusted_app_bots (#57 ask #2, #59): admit this
+      # repo's propagation bot so its dogfood-bump sync PRs are self-reviewed
+      # end to end (the #1783 bootstrap pattern). Requires the self-hosted
+      # patched CLI (scripts/opencode-cli/) — with the released CLI the
+      # assert refuses app bots.
+      trusted_app_bots: '["ai-workflows-propagation[bot]"]'

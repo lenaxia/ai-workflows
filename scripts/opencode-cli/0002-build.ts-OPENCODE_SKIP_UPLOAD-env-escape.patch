@@ -1,0 +1,20 @@
+diff --git a/packages/opencode/script/build.ts b/packages/opencode/script/build.ts
+--- a/packages/opencode/script/build.ts
++++ b/packages/opencode/script/build.ts
+@@ -246,7 +246,15 @@
+       await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
+     }
+   }
+-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
++  // OPENCODE_SKIP_UPLOAD=1 (set by downstream forks/builds that publish
++  // assets themselves with their own release naming): archive the targets
++  // but skip the upstream release upload — the hardcoded v${Script.version}
++  // tag, GH_REPO target, and the ./dist/*.zip glob (empty on single-target
++  // linux builds, which bun treats as a fatal no-match) are all wrong
++  // outside anomalyco's own publish pipeline.
++  if (!process.env["OPENCODE_SKIP_UPLOAD"]) {
++    await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
++  }
+ }
+ 
+ export { binaries }

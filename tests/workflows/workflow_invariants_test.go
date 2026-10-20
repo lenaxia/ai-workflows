@@ -1503,12 +1503,13 @@ func TestPropagateDogfoodBumpPRGatedOnAuth(t *testing.T) {
 // via `opencode github run` (the CLI handler at
 // packages/opencode/src/cli/cmd/github.handler.ts has its own
 // assertPermissions with no skip path). PR #28 was reverted as dead code;
-// this filter is the real fix.
+// this filter was the interim fix.
 //
-// If the opencode CLI ever adds its own skip for use_github_token: true,
-// this filter can be relaxed — but the test stays as a regression guard
-// against accidentally removing the filter and breaking bot-authored PRs
-// across the consumer fleet again.
+// The real fix shipped with the self-hosted patched CLI
+// (scripts/opencode-cli/ — the TOKEN-mode assert bypass, #56): a bot on the
+// caller's trusted_app_bots input now ESCAPES this skip (#59) and is
+// admitted end to end by the authmode step + patched CLI. The default skip
+// remains for every bot nobody explicitly trusted.
 func TestPrReviewSkipsAutomationBots(t *testing.T) {
 	root := invRoot(t)
 	body := readWorkflowFile(t, root, "pr-review.yml")
@@ -1535,7 +1536,6 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 		`"dependabot[bot]"`,
 		`"mergify[bot]"`,
 		`"github-merge-queue[bot]"`,
-		`"ai-workflows-propagation[bot]"`,
 	}
 	for _, bot := range requiredBots {
 		if !strings.Contains(ifLine, bot) {
@@ -1543,6 +1543,22 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 				"The opencode CLI rejects bot-authored PRs with `permission: none` (bots are not collaborators). "+
 				"Add %s to the contains(fromJson([...])) filter on the `review` job so the workflow skips it cleanly instead of failing.", bot, bot)
 		}
+	}
+
+	// The #59 contract: bots are skipped by DEFAULT, but the caller's
+	// trusted_app_bots list must override the skip — otherwise the input is
+	// unreachable from job level and every trusted-bot PR silently no-ops.
+	if !strings.Contains(ifLine, "contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login)") {
+		t.Errorf("pr-review.yml: the bot-skip `if:` lacks the trusted_app_bots escape.\n" +
+			"A caller listing a bot in trusted_app_bots has made a deliberate trust decision; " +
+			"skipping it here makes the input unreachable (#59).")
+	}
+	// ai-workflows-propagation[bot] is deliberately NOT default-skipped: it
+	// is admitted per-caller via trusted_app_bots (self-pr-review.yml wires
+	// it as the reference adoption).
+	if strings.Contains(ifLine, `"ai-workflows-propagation[bot]"`) {
+		t.Errorf("pr-review.yml: ai-workflows-propagation[bot] is hard-skipped on the `if:` line.\n" +
+			"It must be admitted via trusted_app_bots, not un-skipped globally (#59).")
 	}
 }
 
