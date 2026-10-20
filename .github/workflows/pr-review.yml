@@ -60,6 +60,11 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      trusted_app_bots:
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they authors is refused pre-LLM. Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        type: string
+        required: false
+        default: "[]"
 
 jobs:
   review:
@@ -136,6 +141,26 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Resolve opencode auth (trusted app bots)
+        # App-bot PR authors structurally return 'none' from the collaborator
+        # check (apps are not collaborators), so the CLI assert refuses them
+        # before the LLM starts — even when the app holds contents:write via
+        # its installation. The assert's only bypass is the TOKEN env var
+        # (useEnvGithubToken() reads process.env["TOKEN"]; the action's
+        # use_github_token input maps to USE_GITHUB_TOKEN, which nothing in
+        # the CLI consumes at the pinned ref). When the PR author is on the
+        # caller's trusted_app_bots list, export TOKEN=<job token> so the
+        # assert is bypassed FOR THAT ACTOR ONLY; otherwise the output is
+        # empty (falsy in JS) and the assert keeps enforcing. Fail-closed on
+        # malformed list JSON. Trust decision stays caller-owned: this input
+        # is the ONLY way a bot gets in.
+        id: authmode
+        env:
+          ACTOR: ${{ github.event.pull_request.user.login }}
+          TRUSTED_APP_BOTS: ${{ inputs.trusted_app_bots }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .ai-workflows/scripts/trusted-bot-auth.sh
+
       - name: Pre-flight author permission
         # `opencode github run` treats pull_request as a USER event and runs
         # assertPermissions() unconditionally: getCollaboratorPermissionLevel
@@ -148,11 +173,17 @@ jobs:
         # the CLI assert remains the sole enforcement; its only job is to
         # skip LLM attempts that are structurally doomed and leave a
         # PR-visible explanation instead of a bare "no verdict delivered".
+        # EXCEPTION (same-source-preserving): authors on the caller's
+        # trusted_app_bots list are admitted because the CLI assert is
+        # bypassed for them via TOKEN mode (authmode step above) — the run
+        # is NOT doomed; refusing here would re-create the gap this input
+        # exists to close.
         id: preflight
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          TRUSTED_APP_BOTS: ${{ inputs.trusted_app_bots }}
         run: .ai-workflows/scripts/author-permission.sh
 
       - name: Report unreviewable author
@@ -169,7 +200,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           gh pr comment "${PR_NUMBER}" --repo "${REPOSITORY}" --body \
-            "⚠️ Automated review could not run: PR author @${PR_AUTHOR} is not a repository collaborator, and the reviewer's startup permission assert (which checks the PR author for pull_request events) refuses non-collaborators before any review pass. To get this PR reviewed, a member with write access can post \`/review\` on this thread (the comment path checks the commenter instead). Job will be marked failed so the gap stays visible."
+            "⚠️ Automated review could not run: PR author @${PR_AUTHOR} is not a repository collaborator, and the reviewer's startup permission assert (which checks the PR author for pull_request events) refuses non-collaborators before any review pass. To get this PR reviewed, a member with write access can post \`/review\` on this thread (the comment path checks the commenter instead), or — if @${PR_AUTHOR} is a trusted app bot — add its exact login to the caller's \`trusted_app_bots\` input (app bots can never be collaborators; the input bypasses the assert for listed bots only). Job will be marked failed so the gap stays visible."
 
       - name: Build prompt
         env:
@@ -202,6 +233,11 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Trusted-bot bypass: non-empty ONLY when the PR author is on the
+          # caller's trusted_app_bots list (authmode step). Empty string is
+          # falsy in JS — the CLI's assertPermissions keeps enforcing for
+          # every non-listed actor.
+          TOKEN: ${{ steps.authmode.outputs.token }}
         with:
           model: openai-compatible/default
           use_github_token: "true"
@@ -294,6 +330,10 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Trusted-bot bypass — must mirror the first Run OpenCode step
+          # (authmode), or the retry would die on the assert the first run
+          # bypassed.
+          TOKEN: ${{ steps.authmode.outputs.token }}
         with:
           model: openai-compatible/default
           use_github_token: "true"
