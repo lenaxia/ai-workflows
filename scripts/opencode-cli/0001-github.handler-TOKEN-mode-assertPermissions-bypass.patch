@@ -1,0 +1,26 @@
+diff --git a/packages/opencode/src/cli/cmd/github.handler.ts b/packages/opencode/src/cli/cmd/github.handler.ts
+--- a/packages/opencode/src/cli/cmd/github.handler.ts
++++ b/packages/opencode/src/cli/cmd/github.handler.ts
+@@ -1145,6 +1145,22 @@
+       // Only called for non-schedule events, so actor is defined
+       console.log(`Asserting permissions for user ${actor}...`)
+ 
++      // TOKEN-mode bypass (parity with the legacy github/index.ts entrypoint's
++      // useEnvGithubToken()): when the TOKEN env var is set, the surrounding
++      // workflow has already authenticated this event's actor — notably a
++      // trusted GitHub App bot admitted by an explicit caller-side allowlist
++      // (ai-workflows trusted_app_bots -> scripts/trusted-bot-auth.sh). App
++      // bots can never be collaborators, so getCollaboratorPermissionLevel
++      // structurally returns "none" for them and the assert below is
++      // unpassable no matter what the app's installation actually holds.
++      // TOKEN is exported ONLY by that caller gate; every other actor keeps
++      // the full collaborator assert. API auth is deliberately unchanged —
++      // TOKEN is a trust marker for the actor, not a credential swap.
++      if (process.env["TOKEN"]) {
++        console.log("  skipped (using github token)")
++        return
++      }
++
+       let permission
+       try {
+         const response = await octoRest.repos.getCollaboratorPermissionLevel({
