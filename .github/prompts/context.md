@@ -7,7 +7,9 @@ provides reusable GitHub Action workflows, prompt templates, and the
 `route-command.sh` router that powers slash-command AI interactions (`/fix`,
 `/implement`, `/review`, etc.) on issues and PRs.
 
-Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP) reference this
+Consumer repos (gokore, LLMSafeSpaces, rathena-client, TinyRSVP, containers,
+talos-ops-prod, synology-to-immich, ha-custom-components, ai-or-not,
+k8s-mechanic, mini4wd-track-editor, RagnaAlbum, functions, mamahuhu) reference this
 repo via pinned reusable workflows. This repo also dogfoods itself: it consumes
 its own reusable workflows via `.github/workflows/self-*.yml` callers.
 

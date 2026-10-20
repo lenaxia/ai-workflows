@@ -1297,8 +1297,19 @@ func TestReadmeConsumersMatchMatrix(t *testing.T) {
 		rowNames[strings.ToLower(m[1])] = true
 	}
 	tokenRe := regexp.MustCompile(`[A-Za-z0-9_-]+`)
+	// The intro consumer list is the parenthesized enumeration starting at
+	// "Consumer repos (" — scope the check to that region, NOT the whole
+	// file. Whole-file tokenization made this assertion vacuous: every
+	// `| <name> |` table row also yields a whole-file token, so the intro
+	// check could never fire independently of the row check above and
+	// deleting a consumer from the intro paragraph alone still passed.
+	introRe := regexp.MustCompile(`(?s)Consumer repos \(.*?\)`)
+	intro := introRe.FindString(readme)
+	if intro == "" {
+		t.Fatal("README.md: could not find the `Consumer repos (...)` intro paragraph - README structure changed; update this test")
+	}
 	introNames := map[string]bool{}
-	for _, tok := range tokenRe.FindAllString(readme, -1) {
+	for _, tok := range tokenRe.FindAllString(intro, -1) {
 		introNames[strings.ToLower(tok)] = true
 	}
 
@@ -1311,6 +1322,48 @@ func TestReadmeConsumersMatchMatrix(t *testing.T) {
 		}
 		if !introNames[name] {
 			t.Errorf("README: consumer %q missing (case-insensitive) from the intro consumer list.", name)
+		}
+	}
+}
+
+// TestContextPromptConsumerListMatchesMatrix locks .github/prompts/context.md's
+// "Consumer repos (...)" enumeration to the propagate matrix. context.md is
+// the project context fed to AI agents on this repo (issue-responder,
+// pr-review, /review command prompts all `cat` it), so a stale consumer list
+// actively misleads agents about which repos consume these workflows — the
+// same drift class TestReadmeConsumersMatchMatrix locks for the README.
+func TestContextPromptConsumerListMatchesMatrix(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+
+	ctxBytes, err := os.ReadFile(filepath.Join(root, ".github", "prompts", "context.md"))
+	if err != nil {
+		t.Fatalf("read .github/prompts/context.md: %v", err)
+	}
+	ctx := string(ctxBytes)
+	listRe := regexp.MustCompile(`(?s)Consumer repos \(.*?\)`)
+	list := listRe.FindString(ctx)
+	if list == "" {
+		t.Fatal(".github/prompts/context.md: could not find the `Consumer repos (...)` enumeration - prompt structure changed; update this test")
+	}
+	listed := map[string]bool{}
+	for _, tok := range regexp.MustCompile(`[A-Za-z0-9_-]+`).FindAllString(list, -1) {
+		listed[strings.ToLower(tok)] = true
+	}
+
+	for _, c := range strings.Split(m[1], ",") {
+		name := strings.TrimSpace(c)
+		if name == "" || name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !listed[name] {
+			t.Errorf(".github/prompts/context.md: consumer %q missing (case-insensitive) from the `Consumer repos (...)` enumeration — "+
+				"the AI-facing project context under-reports the consumer fleet. Mirror the README intro list.", name)
 		}
 	}
 }
