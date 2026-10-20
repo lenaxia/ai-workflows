@@ -169,11 +169,10 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Trusted-bot bypass: non-empty ONLY when the commenter is on the
-          # caller's trusted_app_bots list (authmode step). Empty string is
-          # falsy in JS — the CLI's assertPermissions keeps enforcing for
-          # every non-listed actor.
-          TOKEN: ${{ steps.authmode.outputs.token }}
+          # NOTE: no step-level TOKEN here — the composite action's inner
+          # "Run opencode" step drops caller step env (verified live, run
+          # 39373330689). The trusted-bot bypass rides GITHUB_ENV from the
+          # authmode step (same path OPENCODE_PROMPT takes).
         with:
           model: openai-compatible/default
           use_github_token: "true"
