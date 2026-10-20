@@ -233,11 +233,12 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Trusted-bot bypass: non-empty ONLY when the PR author is on the
-          # caller's trusted_app_bots list (authmode step). Empty string is
-          # falsy in JS — the CLI's assertPermissions keeps enforcing for
-          # every non-listed actor.
-          TOKEN: ${{ steps.authmode.outputs.token }}
+          # NOTE: no step-level TOKEN here. A step env on the `uses:` call is
+          # DROPPED by the composite action's inner "Run opencode" step (it
+          # declares its own env: block, which excludes caller step env) —
+          # verified live in run 39373330689. The trusted-bot TOKEN bypass
+          # rides GITHUB_ENV from the authmode step instead, which crosses
+          # every composite boundary (same path OPENCODE_PROMPT takes).
         with:
           model: openai-compatible/default
           use_github_token: "true"
@@ -330,10 +331,9 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Trusted-bot bypass — must mirror the first Run OpenCode step
-          # (authmode), or the retry would die on the assert the first run
-          # bypassed.
-          TOKEN: ${{ steps.authmode.outputs.token }}
+          # No step-level TOKEN here either — the bypass rides GITHUB_ENV
+          # from the authmode step (job-wide, crosses the composite boundary
+          # for this retry exactly as for the first run).
         with:
           model: openai-compatible/default
           use_github_token: "true"

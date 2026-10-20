@@ -86,36 +86,27 @@ func TestPrReviewPromptCarriesFallbackDirective(t *testing.T) {
 	}
 }
 
-// TestPrReviewTokenEnvIsRoutedThroughAuthmode supersedes #49 round 1's
-// "no TOKEN env" ruling (then dead code: nothing read it). TOKEN is now
-// LIVE — the CLI's assertPermissions() skips entirely when
-// process.env["TOKEN"] is set (useEnvGithubToken(), verified in the
-// anomalyco/opencode github/index.ts at both the action pin and dev), and
-// caller-step env provably reaches the CLI process (OPENAI_API_KEY reaches
-// the LLM through the same path). It is the ONLY mechanism that lets
-// trusted app bots (never collaborators) pass the assert. The invariant
-// that survives: TOKEN must NEVER be a hardcoded secret — only the
-// authmode step's per-actor output (empty → falsy → assert enforces).
-func TestPrReviewTokenEnvIsRoutedThroughAuthmode(t *testing.T) {
+// TestPrReviewNoStepTokenEnv restores and hardens #49 round 1's ruling with
+// the live-run evidence (LLMSafeSpaces run 39373330689): a step-level TOKEN
+// env on the Run OpenCode steps is DEAD CODE — the composite action's inner
+// "Run opencode" step declares its own env: block, which DROPS the calling
+// step's env entirely (TOKEN:*** appeared in sibling steps' dumps but never
+// in the CLI step's, while GITHUB_ENV-exported OPENCODE_PROMPT reached the
+// CLI). The trusted-bot bypass therefore rides GITHUB_ENV from the authmode
+// step (scripts/trusted-bot-auth.sh). A TOKEN: line here would mislead
+// readers into thinking the bypass is wired when it cannot work.
+func TestPrReviewNoStepTokenEnv(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
 	for _, name := range []string{"Run OpenCode", "Run OpenCode (bounded retry)"} {
 		block := stepBlock(body, name)
 		if block == "" {
 			t.Fatalf("pr-review.yml: no '%s' step", name)
 		}
-		hasToken := false
 		for _, line := range strings.Split(block, "\n") {
 			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, "TOKEN:") {
-				continue
+			if strings.HasPrefix(trimmed, "TOKEN:") {
+				t.Errorf("pr-review.yml: '%s' must not set a step TOKEN: env — the composite action's inner step drops caller step env (dead code; the bypass rides GITHUB_ENV from trusted-bot-auth.sh — #49 r1 + run 39373330689)", name)
 			}
-			hasToken = true
-			if trimmed != "TOKEN: ${{ steps.authmode.outputs.token }}" {
-				t.Errorf("pr-review.yml: '%s' TOKEN env must be exactly `TOKEN: ${{ steps.authmode.outputs.token }}` — a hardcoded token here would bypass the CLI assert for EVERY actor, not just the caller's trusted bots (supersedes the #49 r1 no-TOKEN ruling)", name)
-			}
-		}
-		if !hasToken {
-			t.Errorf("pr-review.yml: '%s' must set TOKEN from the authmode output — without it trusted app-bot authors cannot pass the startup assert", name)
 		}
 	}
 }

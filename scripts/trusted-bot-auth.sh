@@ -55,6 +55,17 @@ fi
 if printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg actor "${ACTOR}" 'index($actor) != null' >/dev/null 2>&1; then
   echo "Actor ${ACTOR} is a trusted app bot — opencode runs in TOKEN mode (startup assert bypassed for this actor only)."
   emit "${GITHUB_TOKEN:-}"
+  # TOKEN MUST ride GITHUB_ENV, not a caller step env: composite actions'
+  # inner run steps that declare their own env: block (the opencode action's
+  # "Run opencode" step does) receive ONLY job-level env + GITHUB_ENV vars —
+  # the calling step's env is dropped (verified live: TOKEN:*** appeared in
+  # the cache step's dump but never in the CLI step's, while an OPENCODE_PROMPT
+  # exported via GITHUB_ENV reached the CLI — run 39373330689). Untrusted
+  # actors write NOTHING here: an absent TOKEN is falsy and the assert
+  # enforces exactly as before.
+  if [ -n "${GITHUB_ENV:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf 'TOKEN=%s\n' "${GITHUB_TOKEN}" >> "${GITHUB_ENV}"
+  fi
   exit 0
 fi
 

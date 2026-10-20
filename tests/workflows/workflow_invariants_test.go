@@ -1731,21 +1731,15 @@ func TestTrustedAppBotsTokenBypassWiring(t *testing.T) {
 		if !strings.Contains(body, "id: authmode") || !strings.Contains(body, "trusted-bot-auth.sh") {
 			t.Fatalf("%s: the authmode step routing trusted-bot-auth.sh is missing.\n"+
 				"The TOKEN bypass must be computed per-actor by the script "+
-				"(fail-closed), never inlined in the workflow.", wf)
+				"(fail-closed, exported via GITHUB_ENV), never inlined in the workflow.", wf)
 		}
-		wantTokenEnv := "TOKEN: ${{ steps.authmode.outputs.token }}"
-		// pr-review.yml has TWO opencode action steps (first run + bounded
-		// retry) — both must carry the bypass or the retry dies on the assert
-		// the first run bypassed.
-		minOccurrences := 1
-		if wf == "pr-review.yml" {
-			minOccurrences = 2
-		}
-		if got := strings.Count(body, wantTokenEnv); got < minOccurrences {
-			t.Errorf("%s: expected >=%d occurrences of `%s`, got %d.\n"+
-				"A missing TOKEN env re-armours the assert against trusted bots; "+
-				"a hardcoded token instead of the step output would disarm it for "+
-				"everyone.", wf, minOccurrences, wantTokenEnv, got)
+		// The bypass rides GITHUB_ENV (composite inner steps drop caller
+		// step env — run 39373330689); a step-level TOKEN: would be dead
+		// code that misleads. Neither workflow may carry one.
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "TOKEN:") {
+				t.Errorf("%s: step-level `TOKEN:` env found — the composite action's inner Run opencode step drops caller step env; the bypass must ride GITHUB_ENV from trusted-bot-auth.sh (run 39373330689).", wf)
+			}
 		}
 	}
 
@@ -1789,6 +1783,14 @@ func TestTrustedBotAuthScriptShape(t *testing.T) {
 	}
 	if !strings.Contains(body, `emit "${GITHUB_TOKEN:-}"`) {
 		t.Errorf("trusted-bot-auth.sh: trusted arm must pass through GITHUB_TOKEN verbatim — never any other token source.")
+	}
+	// The runtime mechanism: TOKEN must ride GITHUB_ENV — composite action
+	// inner steps that declare their own env: block DROP the calling step's
+	// env (live-verified run 39373330689: step TOKEN never reached the CLI;
+	// GITHUB_ENV exports do). A bypass that only emits GITHUB_OUTPUT is
+	// wired-but-dead.
+	if !strings.Contains(body, `printf 'TOKEN=%s\n' "${GITHUB_TOKEN}" >> "${GITHUB_ENV}"`) {
+		t.Errorf("trusted-bot-auth.sh: trusted arm must export TOKEN via GITHUB_ENV — step-level env on the uses: call is dropped by the composite action's inner Run opencode step (run 39373330689).")
 	}
 }
 
