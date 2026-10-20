@@ -115,10 +115,6 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG" \
             --target "$GITHUB_SHA" \
-            --notes "Self-hosted opencode CLI for the reusable workflows.
-
-Upstream: anomalyco/opencode @ v1.19.3 + scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch (TOKEN-mode assertPermissions bypass — trusted GitHub App bot actors; ai-workflows #56/#59).
-
-Single target: linux-x64, embedded web UI skipped (workflows run share: false). Rebuild via the 'Build OpenCode CLI (patched)' workflow dispatch." \
+            --notes "Self-hosted opencode CLI for the reusable workflows. Upstream: anomalyco/opencode @ v1.19.3 + scripts/opencode-cli/0001-github.handler-TOKEN-mode-assertPermissions-bypass.patch (TOKEN-mode assertPermissions bypass — trusted GitHub App bot actors; ai-workflows #56/#59). Single target: linux-x64, embedded web UI skipped (workflows run share: false). Rebuild via the 'Build OpenCode CLI (patched)' workflow dispatch." \
             opencode-linux-x64.tar.gz || \
           gh release upload "$TAG" opencode-linux-x64.tar.gz --clobber
