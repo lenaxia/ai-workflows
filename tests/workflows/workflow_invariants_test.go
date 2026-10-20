@@ -1218,6 +1218,156 @@ func TestPropagateMatrixConsumersHaveConfigFiles(t *testing.T) {
 	}
 }
 
+// TestPropagateMatrixCoversAllConsumerConfigs asserts the reverse direction
+// of TestPropagateMatrixConsumersHaveConfigFiles: every consumers/<name>.yaml
+// config appears in the propagate matrix. The matrix is the only propagation
+// path (the renderer's listConsumers is CLI-only), so a config without a
+// matrix entry never receives render/bump/sync PRs — its pin silently drifts
+// (the silent-drift class documented in Lessons Learned #9). Excludes the
+// self-consumer ai-workflows.yaml, which propagate handles via dogfood-bump.
+func TestPropagateMatrixCoversAllConsumerConfigs(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+	matrix := map[string]bool{}
+	for _, c := range strings.Split(m[1], ",") {
+		if name := strings.TrimSpace(c); name != "" {
+			matrix[name] = true
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(root, "consumers"))
+	if err != nil {
+		t.Fatalf("read consumers dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".yaml")
+		if name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !matrix[name] {
+			t.Errorf("consumers/%s.yaml has no entry in the propagate.yml matrix — "+
+				"it will never receive render/bump/sync PRs and its pin silently drifts. "+
+				"Add %q to the consumer matrix in .github/workflows/propagate.yml.", e.Name(), name)
+		}
+	}
+}
+
+// TestReadmeConsumersMatchMatrix locks README↔matrix parity: every non-self
+// consumer in the propagate matrix must appear BOTH as a `| <name> |` row in
+// the README "## Consumers" table AND in the intro paragraph's consumer list.
+// The README has drifted from the matrix twice in the same defect class
+// (#26/#27 omitted ai-or-not/ha-custom-components; the mamahuhu onboarding
+// initially omitted its table row). This is the docs-side counterpart of
+// TestPropagateMatrixCoversAllConsumerConfigs.
+func TestReadmeConsumersMatchMatrix(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+	matrix := map[string]bool{}
+	for _, c := range strings.Split(m[1], ",") {
+		if name := strings.TrimSpace(c); name != "" {
+			matrix[name] = true
+		}
+	}
+	readmeBytes, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(readmeBytes)
+
+	// README may use display case (LLMSafeSpaces vs config llmsafespaces), so
+	// parity is case-insensitive — the same case convention the matrix uses
+	// config-case for (see TestPropagateMatrixConsumersHaveConfigFiles).
+	rowRe := regexp.MustCompile(`(?m)^\| ([A-Za-z0-9_-]+) \|`)
+	rowNames := map[string]bool{}
+	for _, m := range rowRe.FindAllStringSubmatch(readme, -1) {
+		rowNames[strings.ToLower(m[1])] = true
+	}
+	tokenRe := regexp.MustCompile(`[A-Za-z0-9_-]+`)
+	// The intro consumer list is the parenthesized enumeration starting at
+	// "Consumer repos (" — scope the check to that region, NOT the whole
+	// file. Whole-file tokenization made this assertion vacuous: every
+	// `| <name> |` table row also yields a whole-file token, so the intro
+	// check could never fire independently of the row check above and
+	// deleting a consumer from the intro paragraph alone still passed.
+	introRe := regexp.MustCompile(`(?s)Consumer repos \(.*?\)`)
+	intro := introRe.FindString(readme)
+	if intro == "" {
+		t.Fatal("README.md: could not find the `Consumer repos (...)` intro paragraph - README structure changed; update this test")
+	}
+	introNames := map[string]bool{}
+	for _, tok := range tokenRe.FindAllString(intro, -1) {
+		introNames[strings.ToLower(tok)] = true
+	}
+
+	for name := range matrix {
+		if name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !rowNames[name] {
+			t.Errorf("README: consumer %q has no row (case-insensitive) in the ## Consumers table.", name)
+		}
+		if !introNames[name] {
+			t.Errorf("README: consumer %q missing (case-insensitive) from the intro consumer list.", name)
+		}
+	}
+}
+
+// TestContextPromptConsumerListMatchesMatrix locks .github/prompts/context.md's
+// "Consumer repos (...)" enumeration to the propagate matrix. context.md is
+// the project context fed to AI agents on this repo (issue-responder,
+// pr-review, /review command prompts all `cat` it), so a stale consumer list
+// actively misleads agents about which repos consume these workflows — the
+// same drift class TestReadmeConsumersMatchMatrix locks for the README.
+func TestContextPromptConsumerListMatchesMatrix(t *testing.T) {
+	root := invRoot(t)
+	body := readWorkflowFile(t, root, "propagate.yml")
+	re := regexp.MustCompile(`consumer:\s*\[([^\]]+)\]`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("propagate.yml: could not find `consumer: [...]` matrix line - workflow structure changed; update this test")
+	}
+
+	ctxBytes, err := os.ReadFile(filepath.Join(root, ".github", "prompts", "context.md"))
+	if err != nil {
+		t.Fatalf("read .github/prompts/context.md: %v", err)
+	}
+	ctx := string(ctxBytes)
+	listRe := regexp.MustCompile(`(?s)Consumer repos \(.*?\)`)
+	list := listRe.FindString(ctx)
+	if list == "" {
+		t.Fatal(".github/prompts/context.md: could not find the `Consumer repos (...)` enumeration - prompt structure changed; update this test")
+	}
+	listed := map[string]bool{}
+	for _, tok := range regexp.MustCompile(`[A-Za-z0-9_-]+`).FindAllString(list, -1) {
+		listed[strings.ToLower(tok)] = true
+	}
+
+	for _, c := range strings.Split(m[1], ",") {
+		name := strings.TrimSpace(c)
+		if name == "" || name == "ai-workflows" { // self-consumer: handled by dogfood-bump
+			continue
+		}
+		if !listed[name] {
+			t.Errorf(".github/prompts/context.md: consumer %q missing (case-insensitive) from the `Consumer repos (...)` enumeration — "+
+				"the AI-facing project context under-reports the consumer fleet. Mirror the README intro list.", name)
+		}
+	}
+}
+
 // TestPropagateDogfoodBumpPRGatedOnAuth asserts the dogfood-bump job gates
 // its push/PR step on a Workflows-granted credential being available. The
 // job's commit modifies .github/workflows/self-*.yml (the dogfood pin
