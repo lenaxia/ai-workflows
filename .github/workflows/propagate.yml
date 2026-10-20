@@ -7,7 +7,8 @@
 #   3. Opens a PR in each consumer repo with both changes (prompts + pin bump)
 #
 # It also bumps THIS repo's own dogfood pins (self-pr-review.yml,
-# self-ai-comment.yml, consumers/ai-workflows.yaml) and regenerates the
+# self-ai-comment.yml, self-renovate-analysis.yml, self-issue-opened.yml,
+# consumers/ai-workflows.yaml) and regenerates the
 # rendered prompts that carry the version banner - opening a self-PR for
 # review. Without that dogfood-bump job the pins silently drift (they were
 # stuck at v0.2.1 across v0.2.2/v0.2.3 until PR #20 caught them up manually).
@@ -170,7 +171,8 @@ jobs:
             consumers/ai-workflows.yaml \
             .github/workflows/self-pr-review.yml \
             .github/workflows/self-ai-comment.yml \
-            .github/workflows/self-renovate-analysis.yml; do
+            .github/workflows/self-renovate-analysis.yml \
+            .github/workflows/self-issue-opened.yml; do
             # Replace every vX.Y.Z token in the file with the new tag. These
             # files contain only version tokens for THIS repo's dogfood pin
             # (no unrelated vX.Y.Z strings), so a global replace is safe.
@@ -248,6 +250,7 @@ jobs:
           - \`.github/workflows/self-pr-review.yml\`
           - \`.github/workflows/self-ai-comment.yml\`
           - \`.github/workflows/self-renovate-analysis.yml\`
+          - \`.github/workflows/self-issue-opened.yml\`
 
           Regenerates the ai-sync-rendered prompt banners so \`TestRenderedPromptsMatchTemplates\` stays green.
 

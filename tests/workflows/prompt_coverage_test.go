@@ -127,6 +127,26 @@ func TestGatedCommandsHavePromptFiles(t *testing.T) {
 	}
 }
 
+// TestSelfIssueOpenedHasPromptFiles asserts the prompt files the reusable
+// issue-opened.yml cats in its Build-prompt step (context.md + core-rules.md +
+// issue-responder.md) exist in .github/prompts/. Under the reusable workflow's
+// `set -euo pipefail`, a missing file turns every newly-opened issue into a
+// red run with no AI response. issue-responder.md is rendered (not forked)
+// precisely so this contract holds — see consumers/ai-workflows.yaml.
+func TestSelfIssueOpenedHasPromptFiles(t *testing.T) {
+	root := workflowRoot(t)
+	selfPath := filepath.Join(root, ".github", "workflows", "self-issue-opened.yml")
+	if _, err := os.Stat(selfPath); err != nil {
+		t.Fatalf("read %s: %v (dogfood caller missing — issues opened here no-op)", selfPath, err)
+	}
+	for _, p := range []string{"context.md", "core-rules.md", "issue-responder.md"} {
+		full := filepath.Join(root, ".github", "prompts", p)
+		if _, err := os.Stat(full); err != nil {
+			t.Errorf("self-issue-opened.yml requires prompt %s but it is missing (issue-opened runs red on every new issue)", full)
+		}
+	}
+}
+
 // TestGatedCommandsCommentImmunity locks the scope of gatedCommands to the if:
 // block: a header comment mentioning a command token must not change the
 // asserted gated set.

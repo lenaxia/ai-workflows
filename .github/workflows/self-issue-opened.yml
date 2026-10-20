@@ -1,0 +1,45 @@
+# Issue Opened (self / dogfood) — runs this repo's own reusable issue-opened
+# workflow on issues opened here, so new issues get the AI responder instead
+# of silently no-oping (issue #57 sat unanswered for exactly this reason).
+#
+# Why a separate file: the reusable workflow definition already occupies
+# .github/workflows/issue-opened.yml (on: workflow_call). The `self-` prefix
+# signals self-consumption, mirroring self-pr-review.yml / self-ai-comment.yml.
+#
+# This is the live validation layer for the issue-responder prompt: an issue
+# opened here triggers the real prompt assembly (context.md + core-rules.md +
+# issue-responder.md), the LLM call, and the once-per-thread command footer at
+# the pinned tag — none of which `go test` covers.
+#
+# Requires .github/prompts/issue-responder.md (rendered — see
+# consumers/ai-workflows.yaml) and repo secrets OPENAI_API_KEY /
+# OPENAI_API_BASE + variable OPENAI_MODEL (inherited via secrets: inherit).
+#
+# The responder is read-only (contents: read, persist-credentials: false); it
+# posts analysis and recommends /fix or /implement on the thread. Those
+# commands run via ai-comment.yml — self-ai-comment.yml currently gates
+# /review only; expand its filter in the same PR that ships those prompts.
+#
+# Consistency contract: tests/workflows/pin_consistency_test.go — this file's
+# pins move in lockstep with the other dogfood pin sites, and propagate.yml's
+# dogfood-bump seds this file on every tag push.
+
+name: Issue Opened (self)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  id-token: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  respond:
+    uses: lenaxia/ai-workflows/.github/workflows/issue-opened.yml@v0.2.18
+    secrets: inherit
+    with:
+      version: v0.2.18
+      project_name: ai-workflows

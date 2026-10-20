@@ -30,7 +30,8 @@ func buildAiSync(t *testing.T) string {
 }
 
 // TestIssueResponderIsReadOnly asserts that the rendered issue-responder.md
-// for the gokore consumer (which renders, not forks, this file) contains no
+// for every consumer that renders (not forks) this file — gokore and
+// ai-workflows — contains no
 // instructions that require git push. The issue-opened workflow runs with
 // contents: read + persist-credentials: false, so any push/commit/branch
 // instruction will fail at runtime with HTTP 403.
@@ -39,35 +40,84 @@ func buildAiSync(t *testing.T) string {
 // goKore#334 caught a sync that silently replaced gokore's read-only defense
 // with push instructions from the central template.
 func TestIssueResponderIsReadOnly(t *testing.T) {
+	// Every consumer that RENDERS issue-responder.md (i.e. does not fork it)
+	// consumes it via the read-only issue-opened workflow (contents: read,
+	// persist-credentials: false), so the denylist must hold for each. When
+	// a new consumer un-forks this file, add it here.
+	for _, consumer := range []string{"gokore", "ai-workflows"} {
+		t.Run(consumer, func(t *testing.T) {
+			root := workflowRoot(t)
+			bin := buildAiSync(t)
+			rendered := t.TempDir()
+
+			cmd := exec.Command(bin, "render", "--repo-root", root,
+				"--consumer", consumer, "--into", rendered)
+			cmd.Dir = root
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("render %s: %v\n%s", consumer, err, out)
+			}
+
+			body, err := os.ReadFile(filepath.Join(rendered, "issue-responder.md"))
+			if err != nil {
+				t.Fatalf("read rendered issue-responder.md: %v", err)
+			}
+
+			denylist := []string{
+				"create a feature branch",
+				"open a PR",
+				"git push",
+				"docs/07_WORK_LOG",
+				"create a work log",
+			}
+			for _, phrase := range denylist {
+				if strings.Contains(string(body), phrase) {
+					t.Errorf("rendered issue-responder.md contains push-triggering phrase %q — "+
+						"the issue-opened workflow is read-only (contents: read, "+
+						"persist-credentials: false) and cannot perform this action", phrase)
+				}
+			}
+		})
+	}
+}
+
+// TestIssueResponderPromptMatchesGatedCommands asserts the ai-workflows
+// rendered issue-responder.md never recommends slash commands that silently
+// no-op in this repo: if the prompt names any /command NOT gated in
+// self-ai-comment.yml, it must carry the explicit "not yet wired" caveat
+// (consumers/ai-workflows/issue-responder.md defines it) so the responder
+// tells collaborators the truth instead of pointing them at a skipped
+// workflow. Without the caveat, an issue author following the AI's advice
+// gets exactly the silent-no-op experience self-issue-opened.yml exists to
+// end. Gated set is parsed from self-ai-comment.yml's if: block via
+// gatedCommands (prompt_coverage_test.go, same package).
+func TestIssueResponderPromptMatchesGatedCommands(t *testing.T) {
 	root := workflowRoot(t)
-	bin := buildAiSync(t)
-	rendered := t.TempDir()
-
-	cmd := exec.Command(bin, "render", "--repo-root", root,
-		"--consumer", "gokore", "--into", rendered)
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("render gokore: %v\n%s", err, out)
-	}
-
-	body, err := os.ReadFile(filepath.Join(rendered, "issue-responder.md"))
+	wfContent, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "self-ai-comment.yml"))
 	if err != nil {
-		t.Fatalf("read rendered issue-responder.md: %v", err)
+		t.Fatalf("read self-ai-comment.yml: %v", err)
+	}
+	gated := map[string]bool{}
+	for _, cmd := range gatedCommands(wfContent) {
+		gated[cmd] = true
 	}
 
-	denylist := []string{
-		"create a feature branch",
-		"open a PR",
-		"git push",
-		"docs/07_WORK_LOG",
-		"create a work log",
-	}
-	for _, phrase := range denylist {
-		if strings.Contains(string(body), phrase) {
-			t.Errorf("rendered issue-responder.md contains push-triggering phrase %q — "+
-				"the issue-opened workflow is read-only (contents: read, "+
-				"persist-credentials: false) and cannot perform this action", phrase)
+	body := renderAiWorkflowsPrompt(t, "issue-responder.md")
+
+	var ungated []string
+	seen := map[string]bool{}
+	for _, m := range commandRE.FindAllStringSubmatch(body, -1) {
+		cmd := m[1]
+		if gated[cmd] || seen[cmd] {
+			continue
 		}
+		seen[cmd] = true
+		ungated = append(ungated, "/"+cmd)
+	}
+	if len(ungated) > 0 && !strings.Contains(body, "not yet wired") {
+		t.Errorf("rendered issue-responder.md recommends %v, which self-ai-comment.yml does NOT gate — "+
+			"a collaborator following the advice hits a silently-skipped workflow. Either gate the "+
+			"command or keep the \"not yet wired\" caveat in consumers/ai-workflows/issue-responder.md "+
+			"(issue_responder_command_caveat block).", ungated)
 	}
 }
 

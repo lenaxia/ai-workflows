@@ -7,7 +7,7 @@
 #
 # Fork policy mirrors the other non-gokore consumers (the command templates are
 # goKore-derived: rathena-client packets, hook events, builders, docs/07_WORK_LOG)
-# EXCEPT for four files this repo intentionally RENDERS:
+# EXCEPT for five files this repo intentionally RENDERS:
 #
 #   - pr-review.md            — so template changes (e.g. the commit-reviewed directive)
 #                               flow through and get exercised by real reviews here.
@@ -18,6 +18,11 @@
 #   - renovate-analysis.md    — the Renovate-PR analysis prompt consumed by the reusable
 #                               renovate-analysis.yml; rendering it here exercises the
 #                               exact prompt consumers receive (see self-renovate-analysis.yml).
+#   - issue-responder.md      — the issue-responder prompt consumed by the reusable
+#                               issue-opened.yml; rendering it here exercises the exact
+#                               prompt consumers receive (see self-issue-opened.yml). The
+#                               gokore fragments live in {{ block }} slots overridden by
+#                               consumers/ai-workflows/issue-responder.md.
 #
 # context.md is consumer-owned (never had a template).
 #
@@ -28,11 +33,10 @@
 # callers use a `self-` prefix).
 #
 # NOTE: self-ai-comment.yml is wired up for /review only (the sole command
-# whose prompt ships). The other command prompts (fix.md, implement.md,
-# issue-responder.md, …) are forked (gokore-contaminated) and must be written
-# from scratch before those commands work here; expand self-ai-comment.yml's
-# filter in the same PR that ships them. self-issue-opened.yml is still an
-# unwired follow-up. tests/workflows/prompt_coverage_test.go enforces the
+# whose prompt ships). The other command prompts (fix.md, implement.md, …)
+# are forked (gokore-contaminated) and must be written from scratch before
+# those commands work here; expand self-ai-comment.yml's filter in the same PR
+# that ships them. tests/workflows/prompt_coverage_test.go enforces the
 # filter/prompts contract.
 
 name: ai-workflows
@@ -51,10 +55,16 @@ forked:
   - fix.md
   - help.md
   - implement.md
-  - issue-responder.md
   - merge.md
   - security.md
   - test.md
   - triage.md
 
-blocks: []
+# Per-repo override files. Each name maps to consumers/ai-workflows/<name>.md.
+# Each file can define multiple {{ define "block_name" }} blocks that fill
+# {{ block "block_name" . }} slots in the matching template.
+# - issue-responder.md: defines issue_responder_rules_doc (README pointer) +
+#   issue_responder_constraints (guard tests + propagation contract)
+blocks:
+  - issue-responder
+
