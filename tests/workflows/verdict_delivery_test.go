@@ -86,22 +86,36 @@ func TestPrReviewPromptCarriesFallbackDirective(t *testing.T) {
 	}
 }
 
-// TestPrReviewNoDeadTokenEnv pins #49 round 1's lesson: a `TOKEN:` env on
-// the Run OpenCode steps is dead code — the composite action forwards only
-// USE_GITHUB_TOKEN (already provided) and the CLI never reads TOKEN. Its
-// presence misleads readers into thinking token mode changed.
-func TestPrReviewNoDeadTokenEnv(t *testing.T) {
+// TestPrReviewTokenEnvIsRoutedThroughAuthmode supersedes #49 round 1's
+// "no TOKEN env" ruling (then dead code: nothing read it). TOKEN is now
+// LIVE — the CLI's assertPermissions() skips entirely when
+// process.env["TOKEN"] is set (useEnvGithubToken(), verified in the
+// anomalyco/opencode github/index.ts at both the action pin and dev), and
+// caller-step env provably reaches the CLI process (OPENAI_API_KEY reaches
+// the LLM through the same path). It is the ONLY mechanism that lets
+// trusted app bots (never collaborators) pass the assert. The invariant
+// that survives: TOKEN must NEVER be a hardcoded secret — only the
+// authmode step's per-actor output (empty → falsy → assert enforces).
+func TestPrReviewTokenEnvIsRoutedThroughAuthmode(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
 	for _, name := range []string{"Run OpenCode", "Run OpenCode (bounded retry)"} {
 		block := stepBlock(body, name)
 		if block == "" {
 			t.Fatalf("pr-review.yml: no '%s' step", name)
 		}
+		hasToken := false
 		for _, line := range strings.Split(block, "\n") {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "TOKEN:") {
-				t.Errorf("pr-review.yml: '%s' must not set a TOKEN: env — the pinned action never reads it (dead code, see PR #49 r1 review F1)", name)
+			if !strings.HasPrefix(trimmed, "TOKEN:") {
+				continue
 			}
+			hasToken = true
+			if trimmed != "TOKEN: ${{ steps.authmode.outputs.token }}" {
+				t.Errorf("pr-review.yml: '%s' TOKEN env must be exactly `TOKEN: ${{ steps.authmode.outputs.token }}` — a hardcoded token here would bypass the CLI assert for EVERY actor, not just the caller's trusted bots (supersedes the #49 r1 no-TOKEN ruling)", name)
+			}
+		}
+		if !hasToken {
+			t.Errorf("pr-review.yml: '%s' must set TOKEN from the authmode output — without it trusted app-bot authors cannot pass the startup assert", name)
 		}
 	}
 }

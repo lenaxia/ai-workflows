@@ -285,6 +285,29 @@ instead of silently moving to GitHub-hosted runners:
       runs_on: gokore-runner
 ```
 
+**Trusted app-bot actors** (`pr-review` and `ai-comment`): app-bot accounts
+(a GitHub App's bot login, e.g. `my-app[bot]`) can never be repository
+collaborators — `getCollaboratorPermissionLevel` structurally returns `none`
+for them — so the opencode CLI's startup permission assert refuses their PRs
+and their `/review` comments before any review pass, even when the app's
+installation holds write on the repo and even when the caller's admission
+gate deliberately admits them. To let specific bots be reviewed (and to let
+them trigger reviews), pass the exact-login allowlist:
+
+```yaml
+    with:
+      version: v0.2.0
+      project_name: myrepo
+      trusted_app_bots: '["my-app[bot]"]'
+```
+
+Listed actors run opencode in TOKEN mode — the assert is bypassed for them
+ONLY; every other actor (all humans, unlisted bots) still passes the
+collaborator assert unchanged. Each entry is a deliberate trust decision per
+exact login: never wildcards, never human accounts (humans have the
+collaborator path). The default `[]` preserves the previous behavior
+exactly.
+
 ### 4. Set up secrets and variables in the consumer repo
 
 | Setting | Type | Purpose |

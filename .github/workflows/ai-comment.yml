@@ -51,6 +51,11 @@ on:
         type: string
         required: false
         default: ubuntu-latest
+      trusted_app_bots:
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every /review they post is refused pre-LLM even when the caller's admission gate admits them. Listed commenters run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        type: string
+        required: false
+        default: "[]"
 
 jobs:
   respond:
@@ -139,6 +144,24 @@ jobs:
             echo "PR_CONTEXT=${PR_CONTEXT}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Resolve opencode auth (trusted app bots)
+        # Mirror of the pr-review.yml authmode step, with the COMMENTER as
+        # the actor: the CLI assert checks the comment author on comment
+        # events. App-bot commenters structurally return 'none' from the
+        # collaborator check, so a bot that the caller's admission gate
+        # deliberately admitted (#1710 exact-login arm) still dies at the
+        # assert. When the commenter is on the caller's trusted_app_bots
+        # list, export TOKEN=<job token> (the assert's only bypass —
+        # useEnvGithubToken() reads process.env["TOKEN"]); otherwise the
+        # output is empty (falsy in JS) and the assert keeps enforcing.
+        # Fail-closed on malformed list JSON. Trust stays caller-owned.
+        id: authmode
+        env:
+          ACTOR: ${{ github.event.comment.user.login }}
+          TRUSTED_APP_BOTS: ${{ inputs.trusted_app_bots }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .ai-workflows/scripts/trusted-bot-auth.sh
+
       - name: Run OpenCode
         uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
         env:
@@ -146,6 +169,11 @@ jobs:
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Trusted-bot bypass: non-empty ONLY when the commenter is on the
+          # caller's trusted_app_bots list (authmode step). Empty string is
+          # falsy in JS — the CLI's assertPermissions keeps enforcing for
+          # every non-listed actor.
+          TOKEN: ${{ steps.authmode.outputs.token }}
         with:
           model: openai-compatible/default
           use_github_token: "true"

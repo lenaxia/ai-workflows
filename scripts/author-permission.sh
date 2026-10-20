@@ -30,7 +30,7 @@
 # Exit status: 0 whenever a decision was reached.
 #
 # Usage:
-#   REPOSITORY=owner/repo PR_AUTHOR=<login> GH_TOKEN=<token> author-permission.sh
+#   REPOSITORY=owner/repo PR_AUTHOR=<login> GH_TOKEN=<token> [TRUSTED_APP_BOTS='["bot[bot]"]'] author-permission.sh
 
 set -euo pipefail
 
@@ -42,6 +42,19 @@ emit() {
   [ -n "${GITHUB_OUTPUT:-}" ] && echo "author_allowed=$1" >> "${GITHUB_OUTPUT}"
   echo "PR author ${PR_AUTHOR} pre-flight: author_allowed=$1"
 }
+
+# Trusted app-bot arm: authors on the caller's trusted_app_bots list run
+# with the CLI assert BYPASSED (TOKEN mode — see trusted-bot-auth.sh), so
+# the collaborator lookup below would wrongly classify them as doomed and
+# re-create exactly the gap the input exists to close. Admit them here and
+# say why. Fail-closed: missing/malformed list JSON resolves to not-trusted
+# and falls through to the same-source collaborator check.
+if [ -n "${TRUSTED_APP_BOTS:-}" ] && \
+   printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg author "${PR_AUTHOR}" 'index($author) != null' >/dev/null 2>&1; then
+  echo "PR author ${PR_AUTHOR} is on the caller's trusted_app_bots list — opencode runs in TOKEN mode (assert bypassed for this actor only)."
+  emit true
+  exit 0
+fi
 
 # Percent-encode the login for the URL path (bot logins contain [ ]).
 author_enc="$(printf '%s' "${PR_AUTHOR}" | jq -Rr @uri)"

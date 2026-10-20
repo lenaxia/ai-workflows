@@ -1702,3 +1702,109 @@ func TestConsumerConfigFilesAreInPropagateMatrix(t *testing.T) {
 		}
 	}
 }
+
+// TestTrustedAppBotsTokenBypassWiring locks the trusted-app-bot auth bypass
+// into both actor-bearing reusable workflows (pr-review.yml: PR author;
+// ai-comment.yml: commenter). App-bot accounts can never be collaborators
+// (getCollaboratorPermissionLevel returns 'none' for them), so the opencode
+// CLI's startup assertPermissions() refuses their events pre-LLM. The ONLY
+// assert bypass is the TOKEN env var (useEnvGithubToken() reads
+// process.env["TOKEN"]); the bypass must stay routed through the authmode
+// step so TOKEN is EMPTY — falsy in JS, assert still enforcing — for every
+// actor not on the caller's trusted_app_bots list. A direct
+// `TOKEN: ${{ secrets.GITHUB_TOKEN }}` here would disable the assert for
+// ALL actors, including outside contributors.
+func TestTrustedAppBotsTokenBypassWiring(t *testing.T) {
+	for _, wf := range []string{"pr-review.yml", "ai-comment.yml"} {
+		body := readWorkflowFile(t, invRoot(t), wf)
+
+		if !strings.Contains(body, "trusted_app_bots:") {
+			t.Errorf("%s: no `trusted_app_bots:` input declared.\n"+
+				"Without the input, callers cannot admit app-bot actors and the "+
+				"assert structurally refuses every bot event.", wf)
+		}
+		if !strings.Contains(body, `default: "[]"`) {
+			t.Errorf("%s: `trusted_app_bots:` input must default to \"[]\".\n"+
+				"A non-empty default would silently bypass the assert for bots no "+
+				"caller ever listed.", wf)
+		}
+		if !strings.Contains(body, "id: authmode") || !strings.Contains(body, "trusted-bot-auth.sh") {
+			t.Fatalf("%s: the authmode step routing trusted-bot-auth.sh is missing.\n"+
+				"The TOKEN bypass must be computed per-actor by the script "+
+				"(fail-closed), never inlined in the workflow.", wf)
+		}
+		wantTokenEnv := "TOKEN: ${{ steps.authmode.outputs.token }}"
+		// pr-review.yml has TWO opencode action steps (first run + bounded
+		// retry) — both must carry the bypass or the retry dies on the assert
+		// the first run bypassed.
+		minOccurrences := 1
+		if wf == "pr-review.yml" {
+			minOccurrences = 2
+		}
+		if got := strings.Count(body, wantTokenEnv); got < minOccurrences {
+			t.Errorf("%s: expected >=%d occurrences of `%s`, got %d.\n"+
+				"A missing TOKEN env re-armours the assert against trusted bots; "+
+				"a hardcoded token instead of the step output would disarm it for "+
+				"everyone.", wf, minOccurrences, wantTokenEnv, got)
+		}
+	}
+
+	// The pr-review pre-flight must pass TRUSTED_APP_BOTS through — otherwise
+	// it classifies a trusted bot as a doomed author and blocks before the
+	// action ever runs.
+	pr := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+	if !strings.Contains(pr, "TRUSTED_APP_BOTS: ${{ inputs.trusted_app_bots }}") {
+		t.Errorf("pr-review.yml: pre-flight step does not pass TRUSTED_APP_BOTS through.\n" +
+			"author-permission.sh needs the list to admit trusted bots that the " +
+			"TOKEN bypass lets through.")
+	}
+}
+
+// TestTrustedBotAuthScriptShape asserts the static fail-closed contract of
+// scripts/trusted-bot-auth.sh: malformed list JSON must resolve to
+// not-trusted (empty TOKEN), membership must be exact-login (jq index, no
+// globbing), and a trusted actor must receive the GITHUB_TOKEN passthrough.
+func TestTrustedBotAuthScriptShape(t *testing.T) {
+	path := filepath.Join(invRoot(t), "scripts", "trusted-bot-auth.sh")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("scripts/trusted-bot-auth.sh missing: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("scripts/trusted-bot-auth.sh is not executable — the workflow step `run:` requires the exec bit.")
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading trusted-bot-auth.sh: %v", err)
+	}
+	body := string(src)
+
+	if !strings.Contains(body, `jq -e 'type == "array"'`) {
+		t.Errorf("trusted-bot-auth.sh: missing the JSON-array validation arm.\n" +
+			"Without it a malformed list could be coerced into a bogus match " +
+			"instead of failing closed.")
+	}
+	if !strings.Contains(body, `jq -e --arg actor "${ACTOR}" 'index($actor) != null'`) {
+		t.Errorf("trusted-bot-auth.sh: membership test must be exact-login jq index — no globs, no substring matches.")
+	}
+	if !strings.Contains(body, `emit "${GITHUB_TOKEN:-}"`) {
+		t.Errorf("trusted-bot-auth.sh: trusted arm must pass through GITHUB_TOKEN verbatim — never any other token source.")
+	}
+}
+
+// TestAuthorPermissionTrustedBotArm asserts author-permission.sh carries the
+// trusted-bot admit arm: without it the same-source collaborator check
+// classifies trusted bots as doomed authors and the pre-flight blocks the
+// run before the TOKEN bypass can do its job.
+func TestAuthorPermissionTrustedBotArm(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(invRoot(t), "scripts", "author-permission.sh"))
+	if err != nil {
+		t.Fatalf("reading author-permission.sh: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `jq -e --arg author "${PR_AUTHOR}" 'index($author) != null'`) {
+		t.Errorf("scripts/author-permission.sh: missing the TRUSTED_APP_BOTS admit arm.\n" +
+			"Trusted-bot PR authors would be pre-flight-blocked as 'none'-permission " +
+			"despite the TOKEN bypass admitting them at the action step.")
+	}
+}
