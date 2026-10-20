@@ -88,12 +88,25 @@ jobs:
         # Mints a 1h installation token (Contents/PR/Workflows RW on every
         # repo the app is installed on). A misconfigured key fails loudly
         # here rather than silently degrading - that is intentional.
+        #
+        # `owner:` is REQUIRED here too, not just in the consumer jobs:
+        # without it the action mints a token scoped to ONLY this repository
+        # (ai-workflows) — and a repository-scoped installation token is
+        # refused by GitHub for workflow-file pushes ("refusing to allow a
+        # GitHub App to create or update workflow … without `workflows`
+        # permission") even though the app+installation carry Workflows RW
+        # (v0.2.17 + v0.2.18 dogfood-bump failures, runs 39372170150 /
+        # 39374137187 — same 403 class the consumer jobs documented for
+        # run 32009801496, where the repo-scoped mint 403'd every consumer
+        # push until `owner:` was added there). Mint account-wide, exactly
+        # like the consumer jobs.
         id: app_token
         if: steps.appdetect.outputs.has_app == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ secrets.AI_WORKFLOWS_APP_ID }}
           private-key: ${{ secrets.AI_WORKFLOWS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
 
       - name: Resolve auth (dogfood-bump)
         # The dogfood-bump commit modifies .github/workflows/self-*.yml
