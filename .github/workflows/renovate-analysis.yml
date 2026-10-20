@@ -20,7 +20,7 @@
 #     pull-requests: write
 #   jobs:
 #     analyze-prs:
-#       uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.10
+#       uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.18
 #       secrets: inherit
 #       with:
 #         project_name: myrepo
