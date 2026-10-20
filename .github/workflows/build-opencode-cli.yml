@@ -116,7 +116,7 @@ jobs:
           OPENCODE_SKIP_UPLOAD: "1"
 
       - name: Smoke test binary
-        run: ./packages/opencode/dist/${{ matrix.target }}/bin/opencode --version
+        run: ./packages/opencode/dist/opencode-${{ matrix.target }}/bin/opencode --version
         working-directory: opencode
 
       - name: Publish release asset
