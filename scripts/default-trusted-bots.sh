@@ -15,6 +15,6 @@
 # extend (not replace) this set via their caller's trusted_app_bots input.
 #
 # Sourced by scripts/trusted-bot-auth.sh and scripts/author-permission.sh —
-# keep it assignments-only (no set -e, no output).
+# keep it assignments-only (no shell builtin state changes, no output).
 
 DEFAULT_TRUSTED_APP_BOTS='["ai-workflows-propagation[bot]"]'

@@ -298,3 +298,29 @@ func TestAuthorPermission_UnlistedBotStillRefusedByDefault(t *testing.T) {
 		t.Errorf("an unlisted bot must NOT be admitted by the default set — the default trust must not leak to arbitrary actors.\noutput:\n%s", out)
 	}
 }
+
+// TestAuthorPermission_NonArrayCallerListFailsClosed: a wrong-TYPE caller
+// list (valid JSON string, not an array) must fail closed — jq index()
+// degrades to substring matching on string input, so without the type guard
+// "x-my-app[bot]-x" admits author my-app[bot]. Behavioral half of the
+// TestAuthorPermissionTrustedBotArm guard pin.
+func TestAuthorPermission_NonArrayCallerListFailsClosed(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=my-app[bot]",
+		`TRUSTED_APP_BOTS="x-my-app[bot]-x"`,
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+filepath.Join(outDir, "github_output"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "author_allowed=true") || strings.Contains(string(out), "trusted (default-trusted set") {
+		t.Errorf("a JSON-string caller list must fail CLOSED (substring coercion admitted the author); output:\n%s", out)
+	}
+}

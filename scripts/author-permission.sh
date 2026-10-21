@@ -54,7 +54,12 @@ emit() {
 # close. Admit them here and say why. Fail-closed: missing/malformed list
 # JSON resolves to not-trusted and falls through to the same-source
 # collaborator check.
-if printf '%s' "${TRUSTED_APP_BOTS:-[]}" | jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)' >/dev/null 2>&1; then
+# The type guard is load-bearing, not defensive: on a JSON *string* input
+# jq's index() degrades to SUBSTRING matching ("x-my-app[bot]-x" would admit
+# author my-app[bot]). Same guard as trusted-bot-auth.sh; wrong-type fails
+# closed to the collaborator check.
+if printf '%s' "${TRUSTED_APP_BOTS:-[]}" | jq -e 'type == "array"' >/dev/null 2>&1 && \
+   printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)' >/dev/null 2>&1; then
   echo "PR author ${PR_AUTHOR} is trusted (default-trusted set or the caller's trusted_app_bots list) — opencode runs in TOKEN mode (assert bypassed for this actor only)."
   emit true
   exit 0

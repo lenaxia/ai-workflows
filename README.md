@@ -314,8 +314,8 @@ the one carrying its wiring — would be refused as its author). Consumers
 EXTEND the trusted set via the input; there is deliberately no opt-out
 short of forking the workflow. Each entry is a deliberate trust decision per
 exact login: never wildcards, never human accounts (humans have the
-collaborator path). The default `[]` preserves the previous behavior
-exactly.
+collaborator path). For every actor OUTSIDE the default-trusted set, the
+default `[]` preserves the previous behavior exactly.
 
 ### 4. Set up secrets and variables in the consumer repo
 

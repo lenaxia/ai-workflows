@@ -1561,12 +1561,13 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 		t.Errorf("pr-review.yml: the bot-skip `if:` lacks the default-admit arm for ai-workflows-propagation[bot].\n" +
 			"The propagation bot authors every sync PR; without the default admit, each consumer must hand-wire it (the chicken-and-egg trusted_app_bots exists to end).")
 	}
-	// ai-workflows-propagation[bot] is deliberately NOT default-skipped: it
-	// is admitted per-caller via trusted_app_bots (self-pr-review.yml wires
-	// it as the reference adoption).
+	// ai-workflows-propagation[bot] is default-TRUSTED (scripts/
+	// default-trusted-bots.sh + the job-level default-admit arm above): it
+	// is this pipeline's own propagation bot, and per-caller wiring for it
+	// was the chicken-and-egg trusted_app_bots exists to end. It must never
+	// appear in the skip array, and callers must never need to list it.
 	if strings.Contains(ifLine, `"ai-workflows-propagation[bot]"`) {
-		t.Errorf("pr-review.yml: ai-workflows-propagation[bot] is hard-skipped on the `if:` line.\n" +
-			"It must be admitted via trusted_app_bots, not un-skipped globally (#59).")
+		t.Errorf("pr-review.yml: ai-workflows-propagation[bot] appears in the `if:` line's skip array — it is default-trusted via scripts/default-trusted-bots.sh and the default-admit arm; listing it in the skip array would dead-lock those layers.")
 	}
 }
 
@@ -1993,6 +1994,14 @@ func TestAuthorPermissionTrustedBotArm(t *testing.T) {
 	if !strings.Contains(body, `. "$(dirname "$0")/default-trusted-bots.sh"`) {
 		t.Errorf("scripts/author-permission.sh: must source scripts/default-trusted-bots.sh — the default-trusted set lives there as the single source of truth.")
 	}
+	// Wrong-type caller JSON (a string, not an array) must fail closed: jq
+	// index() degrades to SUBSTRING matching on string input, so without
+	// the guard "x-my-app[bot]-x" admits author my-app[bot]. Same guard as
+	// trusted-bot-auth.sh; behavioral lock:
+	// TestAuthorPermission_NonArrayCallerListFailsClosed.
+	if !strings.Contains(body, `jq -e 'type == "array"'`) {
+		t.Errorf("scripts/author-permission.sh: missing the JSON-array type guard on TRUSTED_APP_BOTS — wrong-type input substring-coerces the admit arm (admits unintended authors).")
+	}
 }
 
 // TestDogfoodBumpHasPatFallback locks the #50 workaround: the dogfood-bump
@@ -2041,5 +2050,36 @@ func TestDogfoodBumpHasPatFallback(t *testing.T) {
 	// executable half of this lock.
 	if strings.Contains(block, ".insteadOf") {
 		t.Errorf("propagate.yml dogfood-bump: uses an insteadOf rewrite for the push credential — the append-only accumulation sent the PAT retry through the app token. Use `git remote set-url` per attempt (see push_as).")
+	}
+}
+
+// TestDefaultTrustedBotsShape pins scripts/default-trusted-bots.sh as the
+// constrained single source of trust: assignments-only (no set/echo/output
+// — it is sourced under the callers' set -euo pipefail), and a valid JSON
+// array of exact app-bot logins containing the propagation bot.
+func TestDefaultTrustedBotsShape(t *testing.T) {
+	root := invRoot(t)
+	path := filepath.Join(root, "scripts", "default-trusted-bots.sh")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("scripts/default-trusted-bots.sh missing: %v", err)
+	}
+	body := string(b)
+	for _, forbidden := range []string{"set -", "echo ", "printf "} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("scripts/default-trusted-bots.sh must be assignments-only (it is sourced under set -euo pipefail); found %q.", forbidden)
+		}
+	}
+	re := regexp.MustCompile(`(?m)^DEFAULT_TRUSTED_APP_BOTS='([^']*)'$`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("scripts/default-trusted-bots.sh: no DEFAULT_TRUSTED_APP_BOTS='[...]' assignment found.")
+	}
+	cmd := exec.Command("bash", "-c", `printf '%s' "$1" | jq -e 'type == "array"'`, "_", m[1])
+	if err := cmd.Run(); err != nil {
+		t.Errorf("DEFAULT_TRUSTED_APP_BOTS is not a valid JSON array: %q", m[1])
+	}
+	if !strings.Contains(m[1], `"ai-workflows-propagation[bot]"`) {
+		t.Errorf("DEFAULT_TRUSTED_APP_BOTS must contain the exact login \"ai-workflows-propagation[bot]\" (this pipeline's propagation bot): %q", m[1])
 	}
 }
