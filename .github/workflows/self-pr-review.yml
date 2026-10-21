@@ -37,5 +37,10 @@ jobs:
       # repo's propagation bot so its dogfood-bump sync PRs are self-reviewed
       # end to end (the #1783 bootstrap pattern). Requires the self-hosted
       # patched CLI (scripts/opencode-cli/) — with the released CLI the
-      # assert refuses app bots.
-      trusted_app_bots: '["ai-workflows-propagation[bot]"]'
+      # assert refuses app bots. Also admits the fleet actor bot
+      # (agentic-actor-coder[bot], the orchestrator fleet's app identity)
+      # so fleet-opened PRs are pipeline-reviewed here exactly as they are
+      # in the consumer caller (LLMSafeSpaces pr-review.yml trusted_app_bots
+      # lists the same login). App bots can never be collaborators; this
+      # input is the only review path for their PRs.
+      trusted_app_bots: '["ai-workflows-propagation[bot]","agentic-actor-coder[bot]"]'
