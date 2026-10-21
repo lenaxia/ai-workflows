@@ -48,6 +48,29 @@ emit() {
   echo "Verdict delivery channel: $1 (PR #${PR_NUMBER}, HEAD ${PR_HEAD_SHA})"
 }
 
+# --- First-pass duration (structural-failure gate for the bounded retry) -------
+# Runtime drill-down (LLMSafeSpaces #1763 comment 6309172907): the observed
+# retry rescue rate across all runs is 0%, and 42% of first-pass failures
+# die in <60s (the structural class — startup asserts, quota 429 storms,
+# provider-unavailable). Retrying those is pure waste (a quota-capped run
+# retried inside its cooldown burned 81s for six more 429s, zero tools).
+# Emit run_minutes so the workflow's retry step can require a run that
+# actually lived long enough for a retry to plausibly help. Fail-open:
+# if the job lookup fails, emit nothing and the retry proceeds as before.
+if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+  job_started="$(gh api "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+    --jq '[.jobs[] | select(.name | test("review"))][0].started_at' 2>/dev/null)" || job_started=""
+  if [ -n "${job_started}" ]; then
+    now_epoch="$(date -u +%s)"
+    started_epoch="$(date -u -d "${job_started}" +%s 2>/dev/null)" || started_epoch=""
+    if [ -n "${started_epoch}" ]; then
+      run_minutes=$(( (now_epoch - started_epoch) / 60 ))
+      echo "run_minutes=${run_minutes}" >> "${GITHUB_OUTPUT}"
+      echo "First pass has lived ${run_minutes}m (structural-failure gate for the retry)."
+    fi
+  fi
+fi
+
 # --- Channel 1: official review ------------------------------------------------
 # --paginate + per-page count aggregation: /pulls/N/reviews pages at 30,
 # oldest first, so a busy PR's head-SHA verdict can sit beyond page 1.
