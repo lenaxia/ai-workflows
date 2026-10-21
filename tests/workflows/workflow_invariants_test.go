@@ -1553,12 +1553,21 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 			"A caller listing a bot in trusted_app_bots has made a deliberate trust decision; " +
 			"skipping it here makes the input unreachable (#59).")
 	}
-	// ai-workflows-propagation[bot] is deliberately NOT default-skipped: it
-	// is admitted per-caller via trusted_app_bots (self-pr-review.yml wires
-	// it as the reference adoption).
+	// The default-trusted propagation bot must be admitted at job level too
+	// (scripts/default-trusted-bots.sh) — otherwise the pre-flight/authmode
+	// layers admit it but the job never runs (#59's exact defect class,
+	// one layer up).
+	if !strings.Contains(ifLine, `github.event.pull_request.user.login == 'ai-workflows-propagation[bot]'`) {
+		t.Errorf("pr-review.yml: the bot-skip `if:` lacks the default-admit arm for ai-workflows-propagation[bot].\n" +
+			"The propagation bot authors every sync PR; without the default admit, each consumer must hand-wire it (the chicken-and-egg trusted_app_bots exists to end).")
+	}
+	// ai-workflows-propagation[bot] is default-TRUSTED (scripts/
+	// default-trusted-bots.sh + the job-level default-admit arm above): it
+	// is this pipeline's own propagation bot, and per-caller wiring for it
+	// was the chicken-and-egg trusted_app_bots exists to end. It must never
+	// appear in the skip array, and callers must never need to list it.
 	if strings.Contains(ifLine, `"ai-workflows-propagation[bot]"`) {
-		t.Errorf("pr-review.yml: ai-workflows-propagation[bot] is hard-skipped on the `if:` line.\n" +
-			"It must be admitted via trusted_app_bots, not un-skipped globally (#59).")
+		t.Errorf("pr-review.yml: ai-workflows-propagation[bot] appears in the `if:` line's skip array — it is default-trusted via scripts/default-trusted-bots.sh and the default-admit arm; listing it in the skip array would dead-lock those layers.")
 	}
 }
 
@@ -1948,8 +1957,11 @@ func TestTrustedBotAuthScriptShape(t *testing.T) {
 			"Without it a malformed list could be coerced into a bogus match " +
 			"instead of failing closed.")
 	}
-	if !strings.Contains(body, `jq -e --arg actor "${ACTOR}" 'index($actor) != null'`) {
-		t.Errorf("trusted-bot-auth.sh: membership test must be exact-login jq index — no globs, no substring matches.")
+	if !strings.Contains(body, `jq -e --arg actor "${ACTOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($actor) != null or ($defaults | index($actor) != null)'`) {
+		t.Errorf("trusted-bot-auth.sh: membership test must be exact-login jq index over the caller list UNION the sourced default set — no globs, no substring matches.")
+	}
+	if !strings.Contains(body, `. "$(dirname "$0")/default-trusted-bots.sh"`) {
+		t.Errorf("trusted-bot-auth.sh: must source scripts/default-trusted-bots.sh — the default-trusted set (this pipeline's propagation bot) lives there as the single source of truth.")
 	}
 	if !strings.Contains(body, `emit "${GITHUB_TOKEN:-}"`) {
 		t.Errorf("trusted-bot-auth.sh: trusted arm must pass through GITHUB_TOKEN verbatim — never any other token source.")
@@ -1974,10 +1986,21 @@ func TestAuthorPermissionTrustedBotArm(t *testing.T) {
 		t.Fatalf("reading author-permission.sh: %v", err)
 	}
 	body := string(src)
-	if !strings.Contains(body, `jq -e --arg author "${PR_AUTHOR}" 'index($author) != null'`) {
-		t.Errorf("scripts/author-permission.sh: missing the TRUSTED_APP_BOTS admit arm.\n" +
+	if !strings.Contains(body, `jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)'`) {
+		t.Errorf("scripts/author-permission.sh: missing the TRUSTED_APP_BOTS-union-defaults admit arm.\n" +
 			"Trusted-bot PR authors would be pre-flight-blocked as 'none'-permission " +
 			"despite the TOKEN bypass admitting them at the action step.")
+	}
+	if !strings.Contains(body, `. "$(dirname "$0")/default-trusted-bots.sh"`) {
+		t.Errorf("scripts/author-permission.sh: must source scripts/default-trusted-bots.sh — the default-trusted set lives there as the single source of truth.")
+	}
+	// Wrong-type caller JSON (a string, not an array) must fail closed: jq
+	// index() degrades to SUBSTRING matching on string input, so without
+	// the guard "x-my-app[bot]-x" admits author my-app[bot]. Same guard as
+	// trusted-bot-auth.sh; behavioral lock:
+	// TestAuthorPermission_NonArrayCallerListFailsClosed.
+	if !strings.Contains(body, `jq -e 'type == "array"'`) {
+		t.Errorf("scripts/author-permission.sh: missing the JSON-array type guard on TRUSTED_APP_BOTS — wrong-type input substring-coerces the admit arm (admits unintended authors).")
 	}
 }
 
@@ -2027,5 +2050,101 @@ func TestDogfoodBumpHasPatFallback(t *testing.T) {
 	// executable half of this lock.
 	if strings.Contains(block, ".insteadOf") {
 		t.Errorf("propagate.yml dogfood-bump: uses an insteadOf rewrite for the push credential — the append-only accumulation sent the PAT retry through the app token. Use `git remote set-url` per attempt (see push_as).")
+	}
+}
+
+// TestDefaultTrustedBotsShape pins scripts/default-trusted-bots.sh as the
+// constrained single source of trust: assignments-only (no set/echo/output
+// — it is sourced under the callers' set -euo pipefail), and a valid JSON
+// array of exact app-bot logins containing the propagation bot.
+func TestDefaultTrustedBotsShape(t *testing.T) {
+	root := invRoot(t)
+	path := filepath.Join(root, "scripts", "default-trusted-bots.sh")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("scripts/default-trusted-bots.sh missing: %v", err)
+	}
+	body := string(b)
+	for _, forbidden := range []string{"set -", "echo ", "printf "} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("scripts/default-trusted-bots.sh must be assignments-only (it is sourced under set -euo pipefail); found %q.", forbidden)
+		}
+	}
+	re := regexp.MustCompile(`(?m)^DEFAULT_TRUSTED_APP_BOTS='([^']*)'$`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatal("scripts/default-trusted-bots.sh: no DEFAULT_TRUSTED_APP_BOTS='[...]' assignment found.")
+	}
+	cmd := exec.Command("bash", "-c", `printf '%s' "$1" | jq -e 'type == "array"'`, "_", m[1])
+	if err := cmd.Run(); err != nil {
+		t.Errorf("DEFAULT_TRUSTED_APP_BOTS is not a valid JSON array: %q", m[1])
+	}
+	if !strings.Contains(m[1], `"ai-workflows-propagation[bot]"`) {
+		t.Errorf("DEFAULT_TRUSTED_APP_BOTS must contain the exact login \"ai-workflows-propagation[bot]\" (this pipeline's propagation bot): %q", m[1])
+	}
+}
+
+// TestPrReviewCallerContractHeader pins the caller-contract header (the
+// block consumers copy): the job-level-skip sentence must NOT name
+// ai-workflows-propagation[bot] — it is default-TRUSTED
+// (scripts/default-trusted-bots.sh), and the header asserting the
+// superseded skip model would send consumers to add pointless (or
+// harmful) caller filters for it.
+func TestPrReviewCallerContractHeader(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+	header := body
+	if idx := strings.Index(header, "\nname:"); idx >= 0 {
+		header = header[:idx]
+	}
+	// The header is a comment block: unwrap comment prefixes and line
+	// breaks so a sentence wrapped across commented lines still matches.
+	normalized := strings.ReplaceAll(header, "\n# ", " ")
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	skipSentence := regexp.MustCompile(`skips automation bots \(([^)]*)\)`).FindStringSubmatch(normalized)
+	if skipSentence == nil {
+		t.Fatal("pr-review.yml: caller-contract header's 'skips automation bots (...)' sentence not found — header structure changed; update this test.")
+	}
+	if strings.Contains(skipSentence[1], "ai-workflows-propagation") {
+		t.Errorf("pr-review.yml: the header's job-level-skip list names ai-workflows-propagation — the bot is default-TRUSTED (scripts/default-trusted-bots.sh), never skipped; consumers reading the contract would filter for it.")
+	}
+	if !strings.Contains(normalized, "scripts/default-trusted-bots.sh") {
+		t.Errorf("pr-review.yml: the header should point default trust at scripts/default-trusted-bots.sh so callers can find the rationale.")
+	}
+}
+
+// TestAuthDocsAssertDefaultTrust pins the trust-model documentation in the
+// workflows: no comment may assert the superseded caller-only model (a bot
+// ONLY via trusted_app_bots), and the authmode/preflight comments must point
+// readers at scripts/default-trusted-bots.sh — the single source of trust
+// truth, so a future reader of any one file learns the actual model.
+func TestAuthDocsAssertDefaultTrust(t *testing.T) {
+	root := invRoot(t)
+	superseded := []string{
+		"ONLY way a bot gets in",
+		"Trust stays caller-owned",
+		"Trust decision stays caller-owned",
+		"only for actors on the caller's trusted_app_bots allowlist",
+	}
+	files := []string{"pr-review.yml", "ai-comment.yml", "build-opencode-cli.yml"}
+	contents := map[string]string{}
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		// Unwrap comment blocks like TestPrReviewCallerContractHeader so
+		// wrapped sentences are checked as sentences.
+		normalized := strings.Join(strings.Fields(strings.ReplaceAll(string(b), "\n# ", " ")), " ")
+		contents[f] = normalized
+		for _, phrase := range superseded {
+			if strings.Contains(normalized, phrase) {
+				t.Errorf("%s: comment asserts the superseded caller-only trust model (%q) — the default-trusted set (scripts/default-trusted-bots.sh) also admits bots; update the text.", f, phrase)
+			}
+		}
+	}
+	for _, f := range []string{"pr-review.yml", "ai-comment.yml"} {
+		if !strings.Contains(contents[f], "scripts/default-trusted-bots.sh") {
+			t.Errorf("%s: the authmode/preflight comments must reference scripts/default-trusted-bots.sh (the single source of trust truth), like the caller-contract header does.", f)
+		}
 	}
 }

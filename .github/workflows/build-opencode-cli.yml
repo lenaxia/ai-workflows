@@ -11,9 +11,9 @@
 # app installation's actual permissions. The only bypass (TOKEN env var) exists
 # in the legacy node entrypoint (github/index.ts useEnvGithubToken()) which the
 # composite action never executes. See issues #56 (root cause) and #59
-# (job-level skip). scripts/trusted-bot-auth.sh exports TOKEN only for actors
-# on the caller's trusted_app_bots allowlist — this build makes the CLI honor
-# it.
+# (job-level skip). scripts/trusted-bot-auth.sh exports TOKEN for actors on
+# the caller's trusted_app_bots allowlist UNION the default-trusted set
+# (scripts/default-trusted-bots.sh) — this build makes the CLI honor it.
 #
 # Delivery: the asset opencode-linux-x64.tar.gz is attached to a release named
 # $release_tag (an `opencode-*` tag — deliberately outside propagate.yml's

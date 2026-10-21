@@ -52,7 +52,7 @@ on:
         required: false
         default: ubuntu-latest
       trusted_app_bots:
-        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every /review they post is refused pre-LLM even when the caller's admission gate admits them. Listed commenters run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every /review they post is refused pre-LLM even when the caller's admission gate admits them — EXCEPT ai-workflows-propagation[bot], always trusted (this pipeline's own propagation bot; see scripts/default-trusted-bots.sh). Listed commenters run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
         type: string
         required: false
         default: "[]"
@@ -154,7 +154,8 @@ jobs:
         # list, export TOKEN=<job token> (the assert's only bypass —
         # useEnvGithubToken() reads process.env["TOKEN"]); otherwise the
         # output is empty (falsy in JS) and the assert keeps enforcing.
-        # Fail-closed on malformed list JSON. Trust stays caller-owned.
+        # Fail-closed on malformed list JSON. Trust = the default-trusted
+        # set (scripts/default-trusted-bots.sh) UNION this caller input.
         id: authmode
         env:
           ACTOR: ${{ github.event.comment.user.login }}

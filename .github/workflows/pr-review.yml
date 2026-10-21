@@ -22,9 +22,11 @@
 # The `uses:` ref MUST be a hardcoded tag (no vars context — see README
 # Lessons Learned #1). The reusable workflow at v0.2.9+ skips automation
 # bots (renovate, github-actions, release-please, dependabot, mergify,
-# github-merge-queue, ai-workflows-propagation) at the job level, so
-# callers do NOT need to add their own `if:` filter for those — add one
-# only for custom bots.
+# github-merge-queue) at the job level, so callers do NOT need to add their
+# own `if:` filter for those — add one only for custom bots. This repo's
+# own ai-workflows-propagation[bot] is additionally TRUSTED BY DEFAULT
+# (scripts/default-trusted-bots.sh): its sync PRs are always reviewable,
+# with no caller wiring.
 # `runs_on` defaults to ubuntu-latest; self-hosted consumers (e.g. gokore)
 # pass their own runner label so AI jobs don't silently move to GitHub-hosted runners.
 #
@@ -63,7 +65,7 @@ on:
         required: false
         default: ubuntu-latest
       trusted_app_bots:
-        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they author is refused pre-LLM. Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they author is refused pre-LLM — EXCEPT ai-workflows-propagation[bot], always trusted (this pipeline's own propagation bot; see scripts/default-trusted-bots.sh). Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
         type: string
         required: false
         default: "[]"
@@ -84,13 +86,19 @@ jobs:
     # the authmode step + patched CLI (TOKEN-mode assert bypass) handle it
     # end to end. Skipping here would make trusted_app_bots unreachable from
     # job-level (the exact #59 defect: ai-workflows-propagation[bot] sat in
-    # this array while every other layer admitted it). Default-skipped bots
-    # that a repo wants reviewed must be added to trusted_app_bots, not
-    # removed from this array.
+    # this array while every other layer admitted it).
+    #
+    # ai-workflows-propagation[bot] — THIS pipeline's own propagation bot —
+    # is additionally admitted BY DEFAULT (scripts/default-trusted-bots.sh):
+    # it authors every consumer sync PR and dogfood-bump PR, and requiring
+    # each consumer to hand-wire it reproduced the chicken-and-egg the
+    # trusted_app_bots input exists to end. Default-skipped bots that a repo
+    # wants reviewed must be added to trusted_app_bots, not removed from
+    # this array.
     #
     # To extend the default-skip list for your org's other bots, copy this
     # `if:` block into your caller workflow's job and add the bot username.
-    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) || contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login) }}
+    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) || github.event.pull_request.user.login == 'ai-workflows-propagation[bot]' || contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login) }}
     concurrency:
       group: ai-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -166,7 +174,9 @@ jobs:
         # step exports TOKEN=<job token> so the assert is bypassed FOR THAT
         # ACTOR ONLY; otherwise the output is empty (falsy in JS) and the
         # assert keeps enforcing. Fail-closed on malformed list JSON. Trust
-        # decision stays caller-owned: this input is the ONLY way a bot gets in.
+        # model: the default-trusted set (scripts/default-trusted-bots.sh —
+        # this pipeline's propagation bot) plus this caller input, the only
+        # way any OTHER bot gets in.
         id: authmode
         env:
           ACTOR: ${{ github.event.pull_request.user.login }}
@@ -187,7 +197,8 @@ jobs:
         # skip LLM attempts that are structurally doomed and leave a
         # PR-visible explanation instead of a bare "no verdict delivered".
         # EXCEPTION (same-source-preserving): authors on the caller's
-        # trusted_app_bots list are admitted because the CLI assert is
+        # trusted_app_bots list or the default-trusted set
+        # (scripts/default-trusted-bots.sh) are admitted because the CLI assert is
         # bypassed for them via TOKEN mode (authmode step above) — the run
         # is NOT doomed; refusing here would re-create the gap this input
         # exists to close.

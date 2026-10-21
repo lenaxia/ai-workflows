@@ -237,3 +237,122 @@ func TestAuthorPermission_EncodesBotLogin(t *testing.T) {
 		t.Errorf("bot login must reach the endpoint intact, recorded: %v", urls)
 	}
 }
+
+// TestAuthorPermission_PropagationBotDefaultTrusted: the propagation bot is
+// in scripts/default-trusted-bots.sh (this pipeline's own delivery bot), so
+// it must be admitted by the pre-flight EVEN WHEN the caller passes an empty
+// trusted_app_bots list — its sync PRs carry every consumer's wiring, and
+// hand-wiring it per consumer was the chicken-and-egg trusted_app_bots
+// exists to end. The mock gh would return permission "none" for it (apps are
+// never collaborators), so reaching the admit arm proves the default union.
+func TestAuthorPermission_PropagationBotDefaultTrusted(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "github_output")
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=ai-workflows-propagation[bot]",
+		"TRUSTED_APP_BOTS=[]",
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+outFile,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "author_allowed=true") {
+		t.Errorf("propagation bot must be admitted via the default-trusted set with an empty caller list.\noutput:\n%s", out)
+	}
+	// Zero collaborator lookups is the expected outcome: the admit arm must
+	// fire BEFORE the endpoint is consulted (mock gh would return none and
+	// doom the run). urls.txt is absent when nothing was recorded.
+	if b, err := os.ReadFile(filepath.Join(dir, "urls.txt")); err == nil && strings.Contains(string(b), "ai-workflows-propagation") {
+		t.Errorf("the collaborator endpoint was consulted for a default-trusted bot (would return none and block the run): %s", string(b))
+	}
+}
+
+// TestAuthorPermission_UnlistedBotStillRefusedByDefault: only the sourced
+// default set is default-trusted — an arbitrary unlisted app bot with an
+// empty caller list must still fall through to the same-source collaborator
+// check (mock: permission none → blocked, fail-closed preserved).
+func TestAuthorPermission_UnlistedBotStillRefusedByDefault(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "github_output")
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=some-other-app[bot]",
+		"TRUSTED_APP_BOTS=[]",
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+outFile,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "author_allowed=true") {
+		t.Errorf("an unlisted bot must NOT be admitted by the default set — the default trust must not leak to arbitrary actors.\noutput:\n%s", out)
+	}
+}
+
+// TestAuthorPermission_NonArrayCallerListFailsClosed: a wrong-TYPE caller
+// list (valid JSON string, not an array) must fail closed — jq index()
+// degrades to substring matching on string input, so without the type guard
+// "x-my-app[bot]-x" admits author my-app[bot]. Behavioral half of the
+// TestAuthorPermissionTrustedBotArm guard pin.
+func TestAuthorPermission_NonArrayCallerListFailsClosed(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=my-app[bot]",
+		`TRUSTED_APP_BOTS="x-my-app[bot]-x"`,
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT="+filepath.Join(outDir, "github_output"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "author_allowed=true") || strings.Contains(string(out), "trusted (default-trusted set") {
+		t.Errorf("a JSON-string caller list must fail CLOSED (substring coercion admitted the author); output:\n%s", out)
+	}
+}
+
+// TestAuthorPermission_UnsetCallerListDefaultsToEmptyArray: TRUSTED_APP_BOTS
+// is documented-optional; unset must behave as [] (guard passes on the
+// default, union misses, falls through to the collaborator check) — never
+// abort on set -u before emitting a decision (the round-2 defect: an
+// unbound-variable abort wrote no output and tripped the workflow).
+func TestAuthorPermission_UnsetCallerListDefaultsToEmptyArray(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "github_output")
+
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=someuser",
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT=" + outFile,
+		// Deliberately NO TRUSTED_APP_BOTS entry.
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0 with TRUSTED_APP_BOTS unset (documented-optional input): %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "author_allowed=true") {
+		t.Errorf("unset list must behave as [] — author falls through to the collaborator check (mock none → refused); output:\n%s", out)
+	}
+	if b, _ := os.ReadFile(outFile); !strings.Contains(string(b), "author_allowed=false") {
+		t.Errorf("a decision must be emitted even with the input unset; output file:\n%s", string(b))
+	}
+}
