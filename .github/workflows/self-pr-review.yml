@@ -28,10 +28,10 @@ permissions:
 jobs:
   review:
     if: github.event.pull_request.user.login != 'renovate[bot]'
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.20
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.21
     secrets: inherit
     with:
-      version: v0.2.20
+      version: v0.2.21
       project_name: ai-workflows
       # Reference adoption of trusted_app_bots (#57 ask #2, #59): admit this
       # repo's propagation bot so its dogfood-bump sync PRs are self-reviewed
