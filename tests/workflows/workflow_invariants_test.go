@@ -1980,3 +1980,28 @@ func TestAuthorPermissionTrustedBotArm(t *testing.T) {
 			"despite the TOKEN bypass admitting them at the action step.")
 	}
 }
+
+// TestDogfoodBumpHasPatFallback locks the #50 workaround: the dogfood-bump
+// push must retry with AI_WORKFLOWS_PAT when the app-token push is refused
+// with the workflows-permission 403 (the installation pushes workflow files
+// to all consumer repos fine but is refused on THIS repo until its
+// repository-access selection includes it). Without the fallback, every tag
+// push dies at "Open dogfood-bump PR" and the pins must be bumped by hand.
+func TestDogfoodBumpHasPatFallback(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+	block := extractJobBlock(body, "dogfood-bump")
+	if block == "" {
+		t.Fatal("propagate.yml: no 'dogfood-bump' job found")
+	}
+	for _, want := range []string{
+		`PAT: ${{ secrets.AI_WORKFLOWS_PAT }}`,
+		"push_as",
+		"without .workflows. permission",
+		`push_as "$PAT"`,
+		`export GH_TOKEN="$PUSH_TOKEN"`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("propagate.yml dogfood-bump: missing %q — the #50 PAT-fallback is gone; tag pushes die at 'Open dogfood-bump PR' again.", want)
+		}
+	}
+}
