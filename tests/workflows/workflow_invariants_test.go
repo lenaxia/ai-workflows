@@ -2002,8 +2002,14 @@ func TestDogfoodBumpHasPatFallback(t *testing.T) {
 		`grep -q 'without .workflows. permission' /tmp/dogfood-push.err`,
 		`push_as "$PAT"`,
 		`export GH_TOKEN="$PUSH_TOKEN"`,
-		// The corrected credential hand-off: set-url REPLACES origin's URL.
+		// The corrected credential hand-off: set-url REPLACES origin's URL,
+		// and the checkout-persisted GITHUB_TOKEN extraheader MUST be
+		// cleared on every push — a persisted Authorization header
+		// supersedes URL-embedded credentials, making any URL hand-off a
+		// no-op until it is neutralized (review round 2; executable half:
+		// TestDogfoodPushAuthorizationFollowsSetUrlUnderPersistedExtraheader).
 		"git remote set-url origin",
+		`git -c http.https://github.com/.extraheader= `,
 		// The loud-failure branch must survive any fallback evolution.
 		"cat /tmp/dogfood-push.err >&2",
 		"exit 1",

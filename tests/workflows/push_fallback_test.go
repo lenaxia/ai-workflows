@@ -19,10 +19,14 @@
 package workflows
 
 import (
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -105,14 +109,18 @@ func pushAsSetURL(t *testing.T, work, home, url string) error {
 
 // pushAsInsteadOf is the ORIGINAL broken hand-off: a global insteadOf
 // rewrite per attempt (the second --replace-all APPENDS a section because
-// the bases differ by embedded credential).
+// the bases differ by embedded credential). The insteadOf value is the FULL
+// remote URL so the rewrite routes to a real repository and git's
+// equal-length tie-break (both sections rewrite the identical URL) resolves
+// to the FIRST section in config order.
 func pushAsInsteadOf(t *testing.T, work, home, base string) error {
 	t.Helper()
 	if err := gitRun(t, work, home, "config", "--global", "--replace-all",
-		"url."+base+".insteadOf", "https://github.com/"); err != nil {
+		"url."+base+".insteadOf", "https://github.com/demo/demo.git"); err != nil {
 		t.Fatalf("config insteadOf: %v", err)
 	}
-	return gitRun(t, work, home, "push", "--force-with-lease", "origin", "sync/dogfood-pins-test")
+	return gitRun(t, work, home, "-c", "http.https://github.com/.extraheader=",
+		"push", "--force-with-lease", "origin", "sync/dogfood-pins-test")
 }
 
 // TestDogfoodPushFallbackAuthenticatesWithPat: after the first (app-token)
@@ -144,18 +152,30 @@ func TestDogfoodPushInsteadOfFallbackWasBroken(t *testing.T) {
 		t.Fatal("first insteadOf push unexpectedly succeeded — fixture does not reproduce a refusal")
 	}
 	// "PAT" rewrite: APPENDS a second insteadOf section (bases differ).
-	// Equal-length insteadOf tie-breaking resolves https://github.com/ to the
-	// FIRST rewrite in config order, so this push must ALSO be refused by
-	// first — the exact no-op this repo shipped in round 1.
+	// Equal-length insteadOf tie-breaking resolves the identical remote URL
+	// to the FIRST rewrite in config order, so this push must ALSO be
+	// refused by first — the exact no-op this repo shipped in round 1.
 	if err := pushAsInsteadOf(t, work, home, "file://"+second); err == nil {
 		t.Fatalf("insteadOf retry landed somewhere other than the first rewrite — the tie-break premise of this test is wrong; investigate before trusting the fallback test")
 	}
-	// And nothing reached the second remote.
-	rev := exec.Command("git", "--git-dir", second, "rev-parse", "--verify", "HEAD")
-	rev.Env = []string{"PATH=" + os.Getenv("PATH")}
-	if err := rev.Run(); err == nil {
+	// Nothing reached the second remote.
+	if err := exec.Command("git", "--git-dir", second, "rev-parse", "--verify",
+		"refs/heads/sync/dogfood-pins-test").Run(); err == nil {
 		t.Error("second remote has commits — tie-breaking did not route through the first rewrite; premise broken")
 	}
+
+	// Harness sanity (per review round 2): swapping the insertion order must
+	// flip which remote receives the first push — otherwise the fixture does
+	// not discriminate config order and locks nothing.
+	first2, second2, work2, home2 := fallbackFixture(t)
+	if err := pushAsInsteadOf(t, work2, home2, "file://"+second2); err != nil {
+		t.Fatalf("swap sanity: first push against second.git unexpectedly refused — fixture does not discriminate config order")
+	}
+	if err := exec.Command("git", "--git-dir", second2, "rev-parse", "--verify",
+		"refs/heads/sync/dogfood-pins-test").Run(); err != nil {
+		t.Error("swap sanity: first push did not land in second.git — fixture does not discriminate config order")
+	}
+	_ = first2
 }
 
 // assertLandedIn verifies work's HEAD == target's HEAD and the refused repo
@@ -184,5 +204,131 @@ func assertLandedIn(t *testing.T, work, target, refused string) {
 	stale.Env = []string{"PATH=" + os.Getenv("PATH")}
 	if err := stale.Run(); err == nil {
 		t.Error("the REFUSED remote has commits — the retry (or first push) leaked through the wrong credential")
+	}
+}
+
+// TestDogfoodPushAuthorizationFollowsSetUrlUnderPersistedExtraheader
+// reproduces the job's ACTUAL credential environment (review round 2's
+// blocking defect): a checkout-persisted
+// http.<origin>/.extraheader Authorization (GITHUB_TOKEN) plus
+// credential-bearing remote URLs, over a real http transport (extraheaders
+// do not apply to file:// — which is why the round-1 fixture was green
+// while the workflow failed). The fixed push_as clears the header per push
+// (git -c http.<origin>/.extraheader=); the Authorization on the wire must
+// then follow the URL credential — APP token on attempt 1, PAT on the
+// retry. Before the fix, both requests carry the persisted GITHUB_TOKEN.
+func TestDogfoodPushAuthorizationFollowsSetUrlUnderPersistedExtraheader(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	var mu sync.Mutex
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		isReceive := strings.Contains(r.URL.Path, "git-receive-pack") || strings.Contains(r.URL.RawQuery, "git-receive-pack")
+		auth := r.Header.Get("Authorization")
+		// Mirror GitHub's actual dance: unauthenticated requests get a
+		// Basic challenge (401); AUTHENTICATED receive-pack requests get
+		// the #50 workflows-permission refusal (403 — never a re-challenge,
+		// which is exactly why a superseding extraheader hides the URL
+		// credential: the custom Authorization header satisfies the
+		// challenge check and curl never offers the URL creds).
+		if isReceive && auth != "" {
+			mu.Lock()
+			got = append(got, auth)
+			mu.Unlock()
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("refusing to allow a GitHub App to create or update workflow `.github/workflows/x.yml` without `workflows` permission\n"))
+			return
+		}
+		if isReceive {
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	// httptest binds 127.0.0.1, but the literal IP breaks git's dotted
+	// config-key parsing for http.<url>.extraheader ("invalid key" — the
+	// IPv4 dots); localhost resolves identically and parses.
+	port := strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
+	originBase := "localhost:" + port
+
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	work := filepath.Join(tmp, "work")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitRun(t, tmp, home, "init", "-q", "-b", "main", work); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"commit", "--allow-empty", "-m", "bump"},
+		{"checkout", "-q", "-b", "sync/dogfood-pins-test"},
+	} {
+		if err := gitRun(t, work, home, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := gitRun(t, work, home, "remote", "add", "origin",
+		"http://"+originBase+"/demo/demo.git"); err != nil {
+		t.Fatal(err)
+	}
+	// The checkout-persisted credential: what actions/checkout v6 writes
+	// for the origin (AUTHORIZATION: basic base64("x-access-token:"+token)).
+	persisted := "AUTHORIZATION: basic " + base64.StdEncoding.EncodeToString(
+		[]byte("x-access-token:GITHUB-TOKEN-SIM"))
+	if err := gitRun(t, work, home, "config", "--local",
+		"http.http://"+originBase+"/.extraheader", persisted); err != nil {
+		t.Fatal(err)
+	}
+
+	// The FIXED push_as, mirrored: set-url per attempt + clear the
+	// extraheader per push (empty -c value). Without the clear, the
+	// recorded Authorization stays GITHUB-TOKEN-SIM on BOTH pushes.
+	pushAs := func(token string) error {
+		t.Helper()
+		if err := gitRun(t, work, home, "remote", "set-url", "origin",
+			"http://x-access-token:"+token+"@"+originBase+"/demo/demo.git"); err != nil {
+			t.Fatalf("set-url: %v", err)
+		}
+		return gitRun(t, work, home,
+			"-c", "http.http://"+originBase+"/.extraheader=",
+			"push", "--force-with-lease", "origin", "sync/dogfood-pins-test")
+	}
+
+	if err := pushAs("APP-TOKEN-SIM"); err == nil {
+		t.Fatal("first push unexpectedly succeeded — server did not reproduce the 403")
+	}
+	if err := pushAs("PAT-SIM"); err == nil {
+		t.Fatal("retry push unexpectedly succeeded — server did not reproduce the 403")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) < 2 {
+		t.Fatalf("expected >=2 recorded Authorization headers (attempt + retry), got %d: %q", len(got), got)
+	}
+	for i, want := range []string{"APP-TOKEN-SIM", "PAT-SIM"} {
+		b64cred := got[i]
+		if i := strings.IndexAny(b64cred, " "); i >= 0 {
+			b64cred = b64cred[i+1:]
+		} else {
+			t.Errorf("request %d: Authorization not Basic: %q", i, got[i])
+			continue
+		}
+		dec, err := base64.StdEncoding.DecodeString(b64cred)
+		if err != nil {
+			t.Errorf("request %d: Authorization not decodable Basic: %q", i, got[i])
+			continue
+		}
+		if !strings.Contains(string(dec), "x-access-token:"+want) {
+			t.Errorf("request %d authenticated as %q, want the URL credential x-access-token:%s — the checkout-persisted extraheader is superseding the URL credential (clear it per push).", i, string(dec), want)
+		}
 	}
 }
