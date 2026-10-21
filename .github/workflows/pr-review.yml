@@ -63,7 +63,7 @@ on:
         required: false
         default: ubuntu-latest
       trusted_app_bots:
-        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they author is refused pre-LLM. Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every PR they author is refused pre-LLM — EXCEPT ai-workflows-propagation[bot], always trusted (this pipeline's own propagation bot; see scripts/default-trusted-bots.sh). Listed actors run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
         type: string
         required: false
         default: "[]"
@@ -84,13 +84,19 @@ jobs:
     # the authmode step + patched CLI (TOKEN-mode assert bypass) handle it
     # end to end. Skipping here would make trusted_app_bots unreachable from
     # job-level (the exact #59 defect: ai-workflows-propagation[bot] sat in
-    # this array while every other layer admitted it). Default-skipped bots
-    # that a repo wants reviewed must be added to trusted_app_bots, not
-    # removed from this array.
+    # this array while every other layer admitted it).
+    #
+    # ai-workflows-propagation[bot] — THIS pipeline's own propagation bot —
+    # is additionally admitted BY DEFAULT (scripts/default-trusted-bots.sh):
+    # it authors every consumer sync PR and dogfood-bump PR, and requiring
+    # each consumer to hand-wire it reproduced the chicken-and-egg the
+    # trusted_app_bots input exists to end. Default-skipped bots that a repo
+    # wants reviewed must be added to trusted_app_bots, not removed from
+    # this array.
     #
     # To extend the default-skip list for your org's other bots, copy this
     # `if:` block into your caller workflow's job and add the bot username.
-    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) || contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login) }}
+    if: ${{ !contains(fromJson('["renovate[bot]","github-actions[bot]","release-please[bot]","dependabot[bot]","mergify[bot]","github-merge-queue[bot]"]'), github.event.pull_request.user.login) || github.event.pull_request.user.login == 'ai-workflows-propagation[bot]' || contains(fromJson(inputs.trusted_app_bots), github.event.pull_request.user.login) }}
     concurrency:
       group: ai-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true

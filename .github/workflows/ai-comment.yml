@@ -52,7 +52,7 @@ on:
         required: false
         default: ubuntu-latest
       trusted_app_bots:
-        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every /review they post is refused pre-LLM even when the caller's admission gate admits them. Listed commenters run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
+        description: "JSON array of exact app-bot logins (e.g. [\"my-app[bot]\"]) admitted past the opencode startup permission assert. App bots can never be collaborators (getCollaboratorPermissionLevel returns 'none' for them), so without this entry every /review they post is refused pre-LLM even when the caller's admission gate admits them — EXCEPT ai-workflows-propagation[bot], always trusted (this pipeline's own propagation bot; see scripts/default-trusted-bots.sh). Listed commenters run in TOKEN mode; all other actors still pass the collaborator assert. Each entry is a deliberate trust decision — never wildcards, never human logins."
         type: string
         required: false
         default: "[]"

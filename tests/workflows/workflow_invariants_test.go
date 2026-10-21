@@ -1553,6 +1553,14 @@ func TestPrReviewSkipsAutomationBots(t *testing.T) {
 			"A caller listing a bot in trusted_app_bots has made a deliberate trust decision; " +
 			"skipping it here makes the input unreachable (#59).")
 	}
+	// The default-trusted propagation bot must be admitted at job level too
+	// (scripts/default-trusted-bots.sh) — otherwise the pre-flight/authmode
+	// layers admit it but the job never runs (#59's exact defect class,
+	// one layer up).
+	if !strings.Contains(ifLine, `github.event.pull_request.user.login == 'ai-workflows-propagation[bot]'`) {
+		t.Errorf("pr-review.yml: the bot-skip `if:` lacks the default-admit arm for ai-workflows-propagation[bot].\n" +
+			"The propagation bot authors every sync PR; without the default admit, each consumer must hand-wire it (the chicken-and-egg trusted_app_bots exists to end).")
+	}
 	// ai-workflows-propagation[bot] is deliberately NOT default-skipped: it
 	// is admitted per-caller via trusted_app_bots (self-pr-review.yml wires
 	// it as the reference adoption).
@@ -1948,8 +1956,11 @@ func TestTrustedBotAuthScriptShape(t *testing.T) {
 			"Without it a malformed list could be coerced into a bogus match " +
 			"instead of failing closed.")
 	}
-	if !strings.Contains(body, `jq -e --arg actor "${ACTOR}" 'index($actor) != null'`) {
-		t.Errorf("trusted-bot-auth.sh: membership test must be exact-login jq index — no globs, no substring matches.")
+	if !strings.Contains(body, `jq -e --arg actor "${ACTOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($actor) != null or ($defaults | index($actor) != null)'`) {
+		t.Errorf("trusted-bot-auth.sh: membership test must be exact-login jq index over the caller list UNION the sourced default set — no globs, no substring matches.")
+	}
+	if !strings.Contains(body, `. "$(dirname "$0")/default-trusted-bots.sh"`) {
+		t.Errorf("trusted-bot-auth.sh: must source scripts/default-trusted-bots.sh — the default-trusted set (this pipeline's propagation bot) lives there as the single source of truth.")
 	}
 	if !strings.Contains(body, `emit "${GITHUB_TOKEN:-}"`) {
 		t.Errorf("trusted-bot-auth.sh: trusted arm must pass through GITHUB_TOKEN verbatim — never any other token source.")
@@ -1974,10 +1985,13 @@ func TestAuthorPermissionTrustedBotArm(t *testing.T) {
 		t.Fatalf("reading author-permission.sh: %v", err)
 	}
 	body := string(src)
-	if !strings.Contains(body, `jq -e --arg author "${PR_AUTHOR}" 'index($author) != null'`) {
-		t.Errorf("scripts/author-permission.sh: missing the TRUSTED_APP_BOTS admit arm.\n" +
+	if !strings.Contains(body, `jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)'`) {
+		t.Errorf("scripts/author-permission.sh: missing the TRUSTED_APP_BOTS-union-defaults admit arm.\n" +
 			"Trusted-bot PR authors would be pre-flight-blocked as 'none'-permission " +
 			"despite the TOKEN bypass admitting them at the action step.")
+	}
+	if !strings.Contains(body, `. "$(dirname "$0")/default-trusted-bots.sh"`) {
+		t.Errorf("scripts/author-permission.sh: must source scripts/default-trusted-bots.sh — the default-trusted set lives there as the single source of truth.")
 	}
 }
 

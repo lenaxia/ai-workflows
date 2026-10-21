@@ -303,7 +303,16 @@ them trigger reviews), pass the exact-login allowlist:
 
 Listed actors run opencode in TOKEN mode — the assert is bypassed for them
 ONLY; every other actor (all humans, unlisted bots) still passes the
-collaborator assert unchanged. Each entry is a deliberate trust decision per
+collaborator assert unchanged.
+
+`ai-workflows-propagation[bot]` — this pipeline's own propagation bot — is
+trusted by default in every caller (`scripts/default-trusted-bots.sh`): it
+authors every consumer sync PR and dogfood-bump PR that `propagate.yml`
+generates, and requiring each consumer to hand-wire it would recreate the
+chicken-and-egg the input exists to end (a new consumer's FIRST sync PR —
+the one carrying its wiring — would be refused as its author). Consumers
+EXTEND the trusted set via the input; there is deliberately no opt-out
+short of forking the workflow. Each entry is a deliberate trust decision per
 exact login: never wildcards, never human accounts (humans have the
 collaborator path). The default `[]` preserves the previous behavior
 exactly.

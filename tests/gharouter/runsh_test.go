@@ -169,3 +169,60 @@ func TestRunShSkipsInstallWhenCurrent(t *testing.T) {
 		t.Errorf("run.sh re-downloaded although the installed binary already reports OC_RELEASE.\ncalls:\n%s", c)
 	}
 }
+
+// TestTrustedBotAuthDefaultSetBehavior executes trusted-bot-auth.sh directly
+// (pure jq decision, no gh needed) and pins the default-trusted contract:
+// the propagation bot gets TOKEN even with an empty caller list; an
+// unlisted bot never does; the caller list still extends the set.
+func TestTrustedBotAuthDefaultSetBehavior(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	script := filepath.Join(filepath.Dir(file), "..", "..", "scripts", "trusted-bot-auth.sh")
+
+	run := func(t *testing.T, actor, list string) string {
+		t.Helper()
+		outDir := t.TempDir()
+		envFile := filepath.Join(outDir, "github_env")
+		outFile := filepath.Join(outDir, "github_output")
+		cmd := exec.Command("bash", script)
+		cmd.Env = append(os.Environ(),
+			"ACTOR="+actor,
+			"TRUSTED_APP_BOTS="+list,
+			"GITHUB_TOKEN=jobtoken",
+			"GITHUB_OUTPUT="+outFile,
+			"GITHUB_ENV="+envFile,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("script exited %v for actor %s: %s", err, actor, out)
+		}
+		return string(out)
+	}
+
+	t.Run("propagation bot default-trusted with empty list", func(t *testing.T) {
+		out := run(t, "ai-workflows-propagation[bot]", "[]")
+		if !strings.Contains(out, "trusted app bot") {
+			t.Errorf("propagation bot must be admitted via the default set; output:\n%s", out)
+		}
+	})
+	t.Run("unlisted bot refused with empty list", func(t *testing.T) {
+		out := run(t, "some-other-app[bot]", "[]")
+		if strings.Contains(out, "trusted app bot") {
+			t.Errorf("an unlisted bot must NOT be admitted by the default set; output:\n%s", out)
+		}
+	})
+	t.Run("caller list still extends the set", func(t *testing.T) {
+		out := run(t, "my-app[bot]", `["my-app[bot]"]`)
+		if !strings.Contains(out, "trusted app bot") {
+			t.Errorf("a caller-listed bot must be admitted; output:\n%s", out)
+		}
+	})
+	t.Run("malformed list still fails closed", func(t *testing.T) {
+		out := run(t, "ai-workflows-propagation[bot]", "not-json")
+		if strings.Contains(out, "trusted app bot") {
+			t.Errorf("malformed caller JSON must fail CLOSED even for a default-trusted actor (the whole trust pipeline degrades, not just the caller list); output:\n%s", out)
+		}
+	})
+}

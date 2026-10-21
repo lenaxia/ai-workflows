@@ -42,6 +42,11 @@ set -euo pipefail
 
 TRUSTED_APP_BOTS="${TRUSTED_APP_BOTS:-[]}"
 
+# Always-trusted app bots (this pipeline's own propagation bot) — see
+# scripts/default-trusted-bots.sh for the rationale. The caller list EXTENDS
+# this set; it never narrows it.
+. "$(dirname "$0")/default-trusted-bots.sh"
+
 emit() {
   [ -n "${GITHUB_OUTPUT:-}" ] && printf 'token=%s\n' "$1" >> "${GITHUB_OUTPUT}"
 }
@@ -52,7 +57,7 @@ if ! printf '%s' "${TRUSTED_APP_BOTS}" | jq -e 'type == "array"' >/dev/null 2>&1
   exit 0
 fi
 
-if printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg actor "${ACTOR}" 'index($actor) != null' >/dev/null 2>&1; then
+if printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg actor "${ACTOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($actor) != null or ($defaults | index($actor) != null)' >/dev/null 2>&1; then
   echo "Actor ${ACTOR} is a trusted app bot — opencode runs in TOKEN mode (startup assert bypassed for this actor only)."
   emit "${GITHUB_TOKEN:-}"
   # TOKEN MUST ride GITHUB_ENV, not a caller step env: composite actions'
@@ -69,6 +74,6 @@ if printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg actor "${ACTOR}" 'index($acto
   exit 0
 fi
 
-echo "Actor ${ACTOR} is not on the trusted_app_bots list — startup assert enforces (TOKEN unset)."
+echo "Actor ${ACTOR} is not on the trusted_app_bots list or the default-trusted set — startup assert enforces (TOKEN unset)."
 emit ""
 exit 0
