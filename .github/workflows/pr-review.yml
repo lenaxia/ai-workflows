@@ -174,7 +174,9 @@ jobs:
         # step exports TOKEN=<job token> so the assert is bypassed FOR THAT
         # ACTOR ONLY; otherwise the output is empty (falsy in JS) and the
         # assert keeps enforcing. Fail-closed on malformed list JSON. Trust
-        # decision stays caller-owned: this input is the ONLY way a bot gets in.
+        # model: the default-trusted set (scripts/default-trusted-bots.sh —
+        # this pipeline's propagation bot) plus this caller input, the only
+        # way any OTHER bot gets in.
         id: authmode
         env:
           ACTOR: ${{ github.event.pull_request.user.login }}
@@ -195,7 +197,8 @@ jobs:
         # skip LLM attempts that are structurally doomed and leave a
         # PR-visible explanation instead of a bare "no verdict delivered".
         # EXCEPTION (same-source-preserving): authors on the caller's
-        # trusted_app_bots list are admitted because the CLI assert is
+        # trusted_app_bots list or the default-trusted set
+        # (scripts/default-trusted-bots.sh) are admitted because the CLI assert is
         # bypassed for them via TOKEN mode (authmode step above) — the run
         # is NOT doomed; refusing here would re-create the gap this input
         # exists to close.

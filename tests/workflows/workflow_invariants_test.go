@@ -2111,3 +2111,40 @@ func TestPrReviewCallerContractHeader(t *testing.T) {
 		t.Errorf("pr-review.yml: the header should point default trust at scripts/default-trusted-bots.sh so callers can find the rationale.")
 	}
 }
+
+// TestAuthDocsAssertDefaultTrust pins the trust-model documentation in the
+// workflows: no comment may assert the superseded caller-only model (a bot
+// ONLY via trusted_app_bots), and the authmode/preflight comments must point
+// readers at scripts/default-trusted-bots.sh — the single source of trust
+// truth, so a future reader of any one file learns the actual model.
+func TestAuthDocsAssertDefaultTrust(t *testing.T) {
+	root := invRoot(t)
+	superseded := []string{
+		"ONLY way a bot gets in",
+		"Trust stays caller-owned",
+		"Trust decision stays caller-owned",
+		"only for actors on the caller's trusted_app_bots allowlist",
+	}
+	files := []string{"pr-review.yml", "ai-comment.yml", "build-opencode-cli.yml"}
+	contents := map[string]string{}
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", f))
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		// Unwrap comment blocks like TestPrReviewCallerContractHeader so
+		// wrapped sentences are checked as sentences.
+		normalized := strings.Join(strings.Fields(strings.ReplaceAll(string(b), "\n# ", " ")), " ")
+		contents[f] = normalized
+		for _, phrase := range superseded {
+			if strings.Contains(normalized, phrase) {
+				t.Errorf("%s: comment asserts the superseded caller-only trust model (%q) — the default-trusted set (scripts/default-trusted-bots.sh) also admits bots; update the text.", f, phrase)
+			}
+		}
+	}
+	for _, f := range []string{"pr-review.yml", "ai-comment.yml"} {
+		if !strings.Contains(contents[f], "scripts/default-trusted-bots.sh") {
+			t.Errorf("%s: the authmode/preflight comments must reference scripts/default-trusted-bots.sh (the single source of trust truth), like the caller-contract header does.", f)
+		}
+	}
+}

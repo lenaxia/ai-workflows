@@ -154,7 +154,8 @@ jobs:
         # list, export TOKEN=<job token> (the assert's only bypass —
         # useEnvGithubToken() reads process.env["TOKEN"]); otherwise the
         # output is empty (falsy in JS) and the assert keeps enforcing.
-        # Fail-closed on malformed list JSON. Trust stays caller-owned.
+        # Fail-closed on malformed list JSON. Trust = the default-trusted
+        # set (scripts/default-trusted-bots.sh) UNION this caller input.
         id: authmode
         env:
           ACTOR: ${{ github.event.comment.user.login }}
