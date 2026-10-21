@@ -40,7 +40,7 @@
 # filter/prompts contract.
 
 name: ai-workflows
-version: v0.2.19
+version: v0.2.20
 
 vars:
   project_name: ai-workflows

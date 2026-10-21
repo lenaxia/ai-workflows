@@ -6,12 +6,14 @@
 package aisync
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // setupRepo creates a temporary ai-workflows-like repo with a minimal set of
@@ -279,5 +281,45 @@ func TestDiff_ReportsChangedFiles(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "merge.md") {
 		t.Errorf("diff should mention merge.md:\n%s", stdout)
+	}
+}
+
+// TestRenderedOutputHasNoNULBytes renders every consumer that renders
+// (ai-workflows, gokore) and asserts every produced artifact is clean text:
+// no 0x00 bytes anywhere, and valid UTF-8. A torn/garbage write from the
+// renderer (or the filesystem under it) must fail HERE, at render time,
+// instead of surfacing as a pile of indirect downstream test failures on a
+// release branch (the e9523cb incident class).
+func TestRenderedOutputHasNoNULBytes(t *testing.T) {
+	// Find the real ai-workflows repo root from the test file location
+	// (buildBinary's pattern).
+	_, file, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(file), "..", "..")
+	bin := buildBinary(t)
+	for _, consumer := range []string{"ai-workflows", "gokore"} {
+		into := filepath.Join(t.TempDir(), consumer)
+		_, stderr, code := runSync(t, bin, root, "render", "--consumer", consumer, "--into", into)
+		if code != 0 {
+			t.Fatalf("render %s exited %d: %s", consumer, code, stderr)
+		}
+		err := filepath.Walk(into, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return err
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("read rendered %s: %v", path, readErr)
+			}
+			if bytes.IndexByte(b, 0x00) >= 0 {
+				t.Errorf("%s: rendered %s contains NUL bytes — renderer/write path produced binary garbage.", consumer, path)
+			}
+			if !utf8.Valid(b) {
+				t.Errorf("%s: rendered %s is not valid UTF-8.", consumer, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk rendered dir: %v", err)
+		}
 	}
 }
