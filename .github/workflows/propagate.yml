@@ -231,15 +231,19 @@ jobs:
           NEW_TAG: ${{ steps.ver.outputs.v }}
         run: |
           set -euo pipefail
-          # Configure git to push as the Workflows-granted-token identity
-          # (app installation token in tier 1, PAT in tier 2 — the default
-          # checkout credential helper uses GITHUB_TOKEN, which the push
-          # step would reject for the workflow-file policy).
+          # Push by swapping the origin credential per attempt via
+          # `remote set-url` (REPLACES the config value — stateless between
+          # attempts). A global URL-rewrite config is gone on purpose: the
+          # append-only accumulation it caused sent the PAT retry back
+          # through the still-installed app-token rewrite (git resolves
+          # equal-length rewrites to the FIRST in config order), failing
+          # with the identical 403 (review round 1 on this mechanism;
+          # locked off by TestDogfoodBumpHasPatFallback + the executable
+          # TestDogfoodPushFallbackAuthenticatesWithPat).
           PUSH_TOKEN="$GH_TOKEN"
           push_as() {
-            git config --global --replace-all \
-              url."https://x-access-token:${1}@github.com/".insteadOf \
-              "https://github.com/"
+            git remote set-url origin \
+              "https://x-access-token:${1}@github.com/${GITHUB_REPOSITORY}.git"
             git push --force-with-lease origin "$BRANCH"
           }
           BRANCH="sync/dogfood-pins-${NEW_TAG}"

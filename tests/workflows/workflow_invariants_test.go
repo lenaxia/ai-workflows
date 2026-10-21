@@ -1996,12 +1996,30 @@ func TestDogfoodBumpHasPatFallback(t *testing.T) {
 	for _, want := range []string{
 		`PAT: ${{ secrets.AI_WORKFLOWS_PAT }}`,
 		"push_as",
-		"without .workflows. permission",
+		// The retry must only fire on the #50 refusal signature — anything
+		// else (network error, a PAT-scope refusal, ...) must fall through
+		// to the loud-failure branch below, never burn a pointless retry.
+		`grep -q 'without .workflows. permission' /tmp/dogfood-push.err`,
 		`push_as "$PAT"`,
 		`export GH_TOKEN="$PUSH_TOKEN"`,
+		// The corrected credential hand-off: set-url REPLACES origin's URL.
+		"git remote set-url origin",
+		// The loud-failure branch must survive any fallback evolution.
+		"cat /tmp/dogfood-push.err >&2",
+		"exit 1",
 	} {
 		if !strings.Contains(block, want) {
-			t.Errorf("propagate.yml dogfood-bump: missing %q — the #50 PAT-fallback is gone; tag pushes die at 'Open dogfood-bump PR' again.", want)
+			t.Errorf("propagate.yml dogfood-bump: missing %q — the #50 PAT-fallback is gone or degraded; tag pushes die at 'Open dogfood-bump PR' again.", want)
 		}
+	}
+	// The ORIGINAL broken hand-off is forbidden: a global url.<base>.insteadOf
+	// rewrite accumulates section keys across attempts (the second
+	// --replace-all APPENDS — the bases differ by embedded token), and git's
+	// equal-length insteadOf tie-breaking resolves to the FIRST rewrite, so
+	// the PAT retry re-authenticates as the app token and fails identically
+	// (review round 1). TestDogfoodPushFallbackAuthenticatesWithPat is the
+	// executable half of this lock.
+	if strings.Contains(block, ".insteadOf") {
+		t.Errorf("propagate.yml dogfood-bump: uses an insteadOf rewrite for the push credential — the append-only accumulation sent the PAT retry through the app token. Use `git remote set-url` per attempt (see push_as).")
 	}
 }
