@@ -2083,3 +2083,31 @@ func TestDefaultTrustedBotsShape(t *testing.T) {
 		t.Errorf("DEFAULT_TRUSTED_APP_BOTS must contain the exact login \"ai-workflows-propagation[bot]\" (this pipeline's propagation bot): %q", m[1])
 	}
 }
+
+// TestPrReviewCallerContractHeader pins the caller-contract header (the
+// block consumers copy): the job-level-skip sentence must NOT name
+// ai-workflows-propagation[bot] — it is default-TRUSTED
+// (scripts/default-trusted-bots.sh), and the header asserting the
+// superseded skip model would send consumers to add pointless (or
+// harmful) caller filters for it.
+func TestPrReviewCallerContractHeader(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "pr-review.yml")
+	header := body
+	if idx := strings.Index(header, "\nname:"); idx >= 0 {
+		header = header[:idx]
+	}
+	// The header is a comment block: unwrap comment prefixes and line
+	// breaks so a sentence wrapped across commented lines still matches.
+	normalized := strings.ReplaceAll(header, "\n# ", " ")
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	skipSentence := regexp.MustCompile(`skips automation bots \(([^)]*)\)`).FindStringSubmatch(normalized)
+	if skipSentence == nil {
+		t.Fatal("pr-review.yml: caller-contract header's 'skips automation bots (...)' sentence not found — header structure changed; update this test.")
+	}
+	if strings.Contains(skipSentence[1], "ai-workflows-propagation") {
+		t.Errorf("pr-review.yml: the header's job-level-skip list names ai-workflows-propagation — the bot is default-TRUSTED (scripts/default-trusted-bots.sh), never skipped; consumers reading the contract would filter for it.")
+	}
+	if !strings.Contains(normalized, "scripts/default-trusted-bots.sh") {
+		t.Errorf("pr-review.yml: the header should point default trust at scripts/default-trusted-bots.sh so callers can find the rationale.")
+	}
+}

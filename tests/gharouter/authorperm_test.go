@@ -324,3 +324,35 @@ func TestAuthorPermission_NonArrayCallerListFailsClosed(t *testing.T) {
 		t.Errorf("a JSON-string caller list must fail CLOSED (substring coercion admitted the author); output:\n%s", out)
 	}
 }
+
+// TestAuthorPermission_UnsetCallerListDefaultsToEmptyArray: TRUSTED_APP_BOTS
+// is documented-optional; unset must behave as [] (guard passes on the
+// default, union misses, falls through to the collaborator check) — never
+// abort on set -u before emitting a decision (the round-2 defect: an
+// unbound-variable abort wrote no output and tripped the workflow).
+func TestAuthorPermission_UnsetCallerListDefaultsToEmptyArray(t *testing.T) {
+	dir := permMockDir(t, "none", false)
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "github_output")
+
+	cmd := exec.Command(authorPermScriptPath(t))
+	cmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"REPOSITORY=lenaxia/test",
+		"PR_AUTHOR=someuser",
+		"GH_TOKEN=faketoken",
+		"GITHUB_OUTPUT=" + outFile,
+		// Deliberately NO TRUSTED_APP_BOTS entry.
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script must exit 0 with TRUSTED_APP_BOTS unset (documented-optional input): %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "author_allowed=true") {
+		t.Errorf("unset list must behave as [] — author falls through to the collaborator check (mock none → refused); output:\n%s", out)
+	}
+	if b, _ := os.ReadFile(outFile); !strings.Contains(string(b), "author_allowed=false") {
+		t.Errorf("a decision must be emitted even with the input unset; output file:\n%s", string(b))
+	}
+}

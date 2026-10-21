@@ -59,7 +59,7 @@ emit() {
 # author my-app[bot]). Same guard as trusted-bot-auth.sh; wrong-type fails
 # closed to the collaborator check.
 if printf '%s' "${TRUSTED_APP_BOTS:-[]}" | jq -e 'type == "array"' >/dev/null 2>&1 && \
-   printf '%s' "${TRUSTED_APP_BOTS}" | jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)' >/dev/null 2>&1; then
+   printf '%s' "${TRUSTED_APP_BOTS:-[]}" | jq -e --arg author "${PR_AUTHOR}" --argjson defaults "${DEFAULT_TRUSTED_APP_BOTS}" 'index($author) != null or ($defaults | index($author) != null)' >/dev/null 2>&1; then
   echo "PR author ${PR_AUTHOR} is trusted (default-trusted set or the caller's trusted_app_bots list) — opencode runs in TOKEN mode (assert bypassed for this actor only)."
   emit true
   exit 0
