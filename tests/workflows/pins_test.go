@@ -100,6 +100,63 @@ func TestActionPinsAreConsistentAcrossFiles(t *testing.T) {
 	}
 }
 
+// reusableSelfRefRE matches the ONE exempted non-SHA ref class: this repo's
+// own reusable workflows referenced by tag (Lessons Learned #1 mandates
+// hardcoded tag literals for lenaxia/ai-workflows/...@vX.Y.Z — a SHA there
+// would break the tag-based consumer pinning model).
+var reusableSelfRefRE = regexp.MustCompile(`^lenaxia/ai-workflows/\.github/workflows/[a-z0-9-]+\.yml@v[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// TestActionRefsAreSHAPinnedOrDeclaredReusable closes the scanner gap that
+// let `actions/cache@v4` land (PR #69 review): refRE requires a {40,}-hex
+// ref, so a plain TAG ref is invisible to every existing pins test. Scan
+// every `uses:` directive directly: each action/workflow ref must either
+// carry a 40-hex SHA pin or be a declared lenaxia/ai-workflows reusable
+// self-reference (tag form). Anything else — mutable tags, branches —
+// fails here.
+func TestActionRefsAreSHAPinnedOrDeclaredReusable(t *testing.T) {
+	// (?m) + optional list-item dash: catches both `uses:` and `- uses:`
+	// (test-router.yml's matrix-included jobs use the list form).
+	usesRE := regexp.MustCompile(`(?m)^\s*(?:-\s+)?uses:\s*(\S+)`)
+	bad := 0
+	for _, f := range workflowFiles(t, repoRoot(t)) {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for _, m := range usesRE.FindAllStringSubmatch(string(content), -1) {
+			ref := m[1]
+			at := strings.LastIndex(ref, "@")
+			if at < 0 {
+				t.Errorf("%s: uses %q has no @ref", f, ref)
+				bad++
+				continue
+			}
+			_, rev := ref[:at], ref[at+1:]
+			if len(rev) == 40 && strings.Trim(rev, "0123456789abcdefABCDEF") == "" {
+				continue // exact SHA pin — the convention
+			}
+			if reusableSelfRefRE.MatchString(ref) {
+				continue // declared exemption: own reusable workflows, tag-pinned
+			}
+			t.Errorf("%s: uses %q — action refs must be SHA-pinned (40-hex) or a lenaxia/ai-workflows reusable self-reference (tag); a mutable tag/branch ref on a workflow that runs on consumer repos is a supply-chain exposure",
+				f, ref)
+			bad++
+		}
+	}
+	if bad == 0 {
+		// Guard against the test silently scanning nothing (e.g. a usesRE
+		// regression matching zero directives across 30+ workflow files).
+		total := 0
+		for _, f := range workflowFiles(t, repoRoot(t)) {
+			b, _ := os.ReadFile(f)
+			total += len(usesRE.FindAllStringIndex(string(b), -1))
+		}
+		if total < 20 {
+			t.Fatalf("scanner sanity: only %d uses: directives found across workflows — the scan has gone blind", total)
+		}
+	}
+}
+
 // TestActionPinsNegativeCase locks in the regression guard independently of the
 // live workflow files: a hermetic, table-driven check that a malformed pin is
 // flagged and well-formed pins pass. This is the committed version of the
