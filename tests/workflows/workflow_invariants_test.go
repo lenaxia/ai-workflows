@@ -2199,3 +2199,62 @@ func TestAuthDocsAssertDefaultTrust(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkflowIfDirectivesNeverUseBareIndicator is the regression lock for
+// the 4f1f1a1 incident (PR #69 r1 review): "restoring" an `if:` directive
+// to the bare-expression form `if: !cancelled() && ...` made GitHub's
+// parser reject the ENTIRE workflow file — a leading `!` lexes as a YAML
+// TAG (as do the other c-indicator first characters: & * [ ] { } , # | >
+// ' " % @), and push run 39683073735 was a zero-job startup failure whose
+// display name was the raw file path. Every workflow test in this repo is
+// text-based, so the suite stayed green while the file was unloadable.
+// Rule: a bare (unquoted, non-${{ }}) `if:` value must not begin with a
+// YAML indicator character; wrap it in ${{ }} (or quote it) instead.
+func TestWorkflowIfDirectivesNeverUseBareIndicator(t *testing.T) {
+	ifRE := regexp.MustCompile(`(?m)^(\s*(?:-\s+)?if:)(\s*)(.*)$`)
+	// c-indicators per YAML 1.2 spec that break plain-scalar parsing when
+	// they appear as the FIRST character of the value.
+	indicators := "!&*[]{},#|>'\"%@`"
+	// Block-scalar intros (|, >, |-, |+, >2, …) are VALID as the whole
+	// value — the scalar body follows on the next lines (self-ai-comment.yml).
+	blockScalar := regexp.MustCompile(`^[|>][+-]?[0-9]*$`)
+	bad := 0
+	for _, f := range workflowFiles(t, invRoot(t)) {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			m := ifRE.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			value := strings.TrimSpace(m[3])
+			if value == "" || blockScalar.MatchString(value) {
+				continue
+			}
+			wrapped := strings.HasPrefix(value, "${{")
+			quoted := strings.HasPrefix(value, "'") || strings.HasPrefix(value, `"`)
+			if wrapped || quoted {
+				continue
+			}
+			if strings.ContainsRune(indicators, rune(value[0])) {
+				t.Errorf("%s:%d: bare `if:` value starts with YAML indicator %q — GitHub rejects the whole file (startup-failure class, run 39683073735); wrap in ${{ }} or quote:\n  %s",
+					f, i+1, string(value[0]), strings.TrimSpace(line))
+				bad++
+			}
+		}
+	}
+	if bad == 0 {
+		// Sanity: the repo has dozens of if: directives; a scanning blind
+		// spot would make this lock vacuous.
+		total := 0
+		for _, f := range workflowFiles(t, invRoot(t)) {
+			b, _ := os.ReadFile(f)
+			total += len(ifRE.FindAllStringIndex(string(b), -1))
+		}
+		if total < 20 {
+			t.Fatalf("scanner sanity: only %d if: directives found across workflows — the scan has gone blind", total)
+		}
+	}
+}
