@@ -2148,3 +2148,42 @@ func TestAuthDocsAssertDefaultTrust(t *testing.T) {
 		}
 	}
 }
+
+// TestPropagateClosesSupersededSyncPRs locks the stack-hygiene contract:
+// opening a new sync PR (consumer legs) or dogfood-bump PR must auto-close
+// every older sync PR it supersedes (and delete the dead branch). Before
+// this, each release stacked a stale PR per repo — the 13-repo fleet
+// accumulated ~100 of them before a manual sweep.
+func TestPropagateClosesSupersededSyncPRs(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+
+	syncStep := stepBlock(body, "Open sync PR")
+	if syncStep == "" {
+		t.Fatal("propagate.yml: no 'Open sync PR' step — structure changed; update this test.")
+	}
+	dogfoodStep := stepBlock(body, "Open dogfood-bump PR")
+	if dogfoodStep == "" {
+		t.Fatal("propagate.yml: no 'Open dogfood-bump PR' step — structure changed; update this test.")
+	}
+
+	for name, sc := range map[string]struct {
+		step  string
+		patch string
+	}{
+		"consumer sync": {syncStep, `sync/ai-workflows-v`},
+		"dogfood-bump":  {dogfoodStep, `sync/dogfood-pins-`},
+	} {
+		pattern := `test(\"^` + sc.patch + `\")`
+		for _, want := range []string{
+			"gh pr list --state open",
+			pattern,
+			`select(.headRefName != \"${BRANCH}\")`,
+			"gh pr close \"$pr\" --delete-branch",
+			"|| true",
+		} {
+			if !strings.Contains(sc.step, want) {
+				t.Errorf("propagate.yml '%s': missing %q — the auto-close of superseded %s PRs is gone; releases will stack stale PRs again.", name, want, name)
+			}
+		}
+	}
+}
