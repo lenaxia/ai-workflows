@@ -352,7 +352,7 @@ jobs:
         # already landed (so a skipped/never-run salvage cannot re-run the
         # LLM unnecessarily). The pre-flight gate keeps the retry from
         # re-attempting a structurally refused author.
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
+        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false' }}
         env:
           MODEL: openai-compatible/default
           AGENT: ""
@@ -380,7 +380,7 @@ jobs:
         # comment, so an ungated run here would POST A DUPLICATE review.
         id: salvage-retry
         continue-on-error: true
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
+        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
