@@ -69,6 +69,11 @@ on:
         type: string
         required: false
         default: "[]"
+      debounce_minutes:
+        description: "Quiet-window debounce (lever 4, #1763 comment 6309172907): the review waits this many minutes for a quieter PR before doing ANY work; a newer push during the window cancels the waiting run (per-PR concurrency, cancel-in-progress) and restarts the timer on the fresh run. Event-driven simulation on #1763's 31 runs: a 10-minute window is verdict-neutral (12/12 completed verdicts retained) and saves ~21% of review compute by not burning passes that supersession kills mid-flight. 0 disables the debounce (review starts immediately)."
+        type: number
+        required: false
+        default: 10
 
 jobs:
   review:
@@ -108,6 +113,35 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      - name: Debounce (quiet window)
+        # Lever 4 (LLMSafeSpaces #1763 comment 6309172907, owner ruling):
+        # wait out a quiet window BEFORE any work — checkout included. A
+        # newer push during the window cancels this run (the per-PR
+        # concurrency group above, cancel-in-progress: true) and the fresh
+        # run restarts the timer, so the review only begins after
+        # debounce_minutes without a newer push. Simulated on #1763's 31
+        # runs: verdict-neutral at 10 minutes (12/12 verdicts retained),
+        # ~21% compute saved by not starting passes that supersession
+        # would kill mid-flight (2.6 runs/verdict -> fewer). MUST be the
+        # FIRST step: everything before the LLM is cheap, and sleeping
+        # first means a superseding push cancels a sleep, not a pass.
+        # debounce_minutes: 0 disables (skip entirely).
+        #
+        # Emits debounce_seconds (the time actually slept) so the
+        # check-verdict step can subtract the window from run_minutes —
+        # PR #69's structural-failure retry gate must keep measuring the
+        # first pass's own lifetime, not the quiet window.
+        id: debounce
+        if: ${{ inputs.debounce_minutes > 0 }}
+        run: |
+          minutes=$(printf '%.0f' "${DEBOUNCE_MINUTES}")
+          seconds=$(( minutes * 60 ))
+          echo "Debouncing ${minutes}m (quiet window; a newer push cancels this run and restarts the timer)."
+          sleep "${seconds}"
+          echo "debounce_seconds=${seconds}" >> "${GITHUB_OUTPUT}"
+        env:
+          DEBOUNCE_MINUTES: ${{ inputs.debounce_minutes }}
+
       - name: Checkout consumer repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -326,6 +360,13 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Lever 4 coupling: the debounce step reports how long it slept so
+          # check-verdict.sh can subtract it from run_minutes — without this,
+          # a 10-minute quiet window makes every first pass read >=10 minutes
+          # and PR #69's structural-failure retry gate (>= 3) never fires,
+          # re-opening the doomed-retry waste it exists to stop. Unset when
+          # the debounce is disabled or skipped — the script treats that as 0.
+          DEBOUNCE_SECONDS: ${{ steps.debounce.outputs.debounce_seconds }}
         run: .ai-workflows/scripts/check-verdict.sh
 
       - name: Salvage dumped verdict

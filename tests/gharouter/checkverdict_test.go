@@ -401,3 +401,55 @@ func TestCheckVerdict_RunMinutesMeasuresFromJobStart(t *testing.T) {
 		}
 	})
 }
+
+// PIN (lever 4 coupling): run_minutes must SUBTRACT the debounce quiet
+// window — PR #69's structural-failure gate measures the first pass's own
+// lifetime, never the lever-4 sleep. Without this, the default 10-minute
+// debounce makes every structurally-doomed first pass read >=10 minutes
+// and the >=3 retry gate never fires (the gate defeated by the debounce).
+func TestCheckVerdict_RunMinutesSubtractsDebounce(t *testing.T) {
+	t.Run("11m elapsed minus 600s debounce", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, time.Now().Add(-11*time.Minute).UTC().Format(time.RFC3339))
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345", "DEBOUNCE_SECONDS=600")
+		rm, ok := outs["run_minutes"]
+		if !ok {
+			t.Fatalf("expected run_minutes emission, got none\noutput:\n%s", out)
+		}
+		n := 0
+		if _, err := fmt.Sscanf(rm, "%d", &n); err != nil {
+			t.Fatalf("run_minutes must be an integer, got %q", rm)
+		}
+		if n < 0 || n > 1 {
+			t.Errorf("11m elapsed minus a 600s debounce must floor to 0..1 (the pass itself lived ~1m — gate must be able to bite), got %d", n)
+		}
+	})
+	t.Run("garbage DEBOUNCE_SECONDS fails open to zero", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, time.Now().Add(-5*time.Minute).UTC().Format(time.RFC3339))
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345", "DEBOUNCE_SECONDS=not-a-number")
+		rm, ok := outs["run_minutes"]
+		if !ok {
+			t.Fatalf("expected run_minutes emission, got none\noutput:\n%s", out)
+		}
+		n := 0
+		if _, err := fmt.Sscanf(rm, "%d", &n); err != nil {
+			t.Fatalf("run_minutes must be an integer, got %q", rm)
+		}
+		if n < 4 || n > 5 {
+			t.Errorf("garbage DEBOUNCE_SECONDS must be treated as 0 (fail-open): 5m elapsed should floor to 4..5, got %d", n)
+		}
+	})
+	t.Run("unset DEBOUNCE_SECONDS behaves as before", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, time.Now().Add(-5*time.Minute).UTC().Format(time.RFC3339))
+		_, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		n := 0
+		if _, err := fmt.Sscanf(outs["run_minutes"], "%d", &n); err != nil {
+			t.Fatalf("run_minutes must be an integer, got %q", outs["run_minutes"])
+		}
+		if n < 4 || n > 5 {
+			t.Errorf("no debounce env => no subtraction: 5m elapsed should floor to 4..5, got %d", n)
+		}
+	})
+}

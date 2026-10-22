@@ -61,15 +61,17 @@ emit() {
 # TestCheckVerdict_RunMinutesMeasuresFromJobStart): run_minutes measures
 # JOB elapsed time (now - the first "review"-named job's started_at), not
 # the "Run OpenCode" step alone — it includes checkout (~18s median),
-# preflight, prompt build, and cache restore. A structurally-doomed first
-# pass therefore needs to die >3min minus that overhead before the gate
-# bites; the residual overlap is accepted because the gate's premise is a
-# 0% observed rescue rate (fail direction: a too-generous retry wastes one
-# bounded pass, never loses a verdict). Two known edges: `date -d` is
-# GNU-coreutils (the runner fleet is Linux-only; a BSD date would fail
-# open to "no run_minutes"), and a clock-skewed FUTURE started_at yields a
-# negative run_minutes, which fails CLOSED (retry skipped) — pinned
-# visibly rather than silently.
+# preflight, prompt build, and cache restore — MINUS the debounce quiet
+# window (DEBOUNCE_SECONDS, emitted by the lever-4 sleep step; the gate
+# must measure the pass's own lifetime, never the wait). A structurally-
+# doomed first pass therefore needs to die >3min minus that overhead
+# before the gate bites; the residual overlap is accepted because the
+# gate's premise is a 0% observed rescue rate (fail direction: a
+# too-generous retry wastes one bounded pass, never loses a verdict).
+# Two known edges: `date -d` is GNU-coreutils (the runner fleet is
+# Linux-only; a BSD date would fail open to "no run_minutes"), and a
+# clock-skewed FUTURE started_at yields a negative run_minutes, which
+# fails CLOSED (retry skipped) — pinned visibly rather than silently.
 #
 # Fail-open contract: if the job lookup or date parse fails, emit nothing
 # and the retry proceeds as before (run_minutes unset => gate's ''
@@ -81,9 +83,21 @@ if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
     now_epoch="$(date -u +%s)"
     started_epoch="$(date -u -d "${job_started}" +%s 2>/dev/null)" || started_epoch=""
     if [ -n "${started_epoch}" ]; then
-      run_minutes=$(( (now_epoch - started_epoch) / 60 ))
+      # Lever 4 coupling: subtract the debounce quiet window so run_minutes
+      # keeps measuring the first pass's own lifetime. Without this, a
+      # 10-minute default debounce makes every structurally-doomed first
+      # pass read >=10 minutes and the >=3 gate never fires (PR #69's gate
+      # defeated by lever 4's sleep). DEBOUNCE_SECONDS is unset when the
+      # debounce is disabled/skipped — treat that (and any non-numeric
+      # value) as 0, fail-open like the rest of this block.
+      debounce_seconds=0
+      case "${DEBOUNCE_SECONDS:-}" in
+        ''|*[!0-9]*) ;;
+        *) debounce_seconds="${DEBOUNCE_SECONDS}" ;;
+      esac
+      run_minutes=$(( (now_epoch - started_epoch - debounce_seconds) / 60 ))
       echo "run_minutes=${run_minutes}" >> "${GITHUB_OUTPUT}"
-      echo "First pass has lived ${run_minutes}m (structural-failure gate for the retry)."
+      echo "First pass has lived ${run_minutes}m (structural-failure gate for the retry; ${debounce_seconds}s of debounce subtracted)."
     fi
   fi
 fi
