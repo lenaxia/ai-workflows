@@ -48,6 +48,46 @@ emit() {
   echo "Verdict delivery channel: $1 (PR #${PR_NUMBER}, HEAD ${PR_HEAD_SHA})"
 }
 
+# --- First-pass duration (structural-failure gate for the bounded retry) -------
+# Runtime drill-down (LLMSafeSpaces #1763 comment 6309172907): the observed
+# retry rescue rate across all runs is 0%, and 42% of first-pass failures
+# die in <60s (the structural class — startup asserts, quota 429 storms,
+# provider-unavailable). Retrying those is pure waste (a quota-capped run
+# retried inside its cooldown burned 81s for six more 429s, zero tools).
+# Emit run_minutes so the workflow's retry step can require a run that
+# actually lived long enough for a retry to plausibly help.
+#
+# SEMANTICS (deliberate approximation, pinned by
+# TestCheckVerdict_RunMinutesMeasuresFromJobStart): run_minutes measures
+# JOB elapsed time (now - the first "review"-named job's started_at), not
+# the "Run OpenCode" step alone — it includes checkout (~18s median),
+# preflight, prompt build, and cache restore. A structurally-doomed first
+# pass therefore needs to die >3min minus that overhead before the gate
+# bites; the residual overlap is accepted because the gate's premise is a
+# 0% observed rescue rate (fail direction: a too-generous retry wastes one
+# bounded pass, never loses a verdict). Two known edges: `date -d` is
+# GNU-coreutils (the runner fleet is Linux-only; a BSD date would fail
+# open to "no run_minutes"), and a clock-skewed FUTURE started_at yields a
+# negative run_minutes, which fails CLOSED (retry skipped) — pinned
+# visibly rather than silently.
+#
+# Fail-open contract: if the job lookup or date parse fails, emit nothing
+# and the retry proceeds as before (run_minutes unset => gate's ''
+# disjunct).
+if [ -n "${GITHUB_OUTPUT:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+  job_started="$(gh api "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+    --jq '[.jobs[] | select(.name | test("review"))][0].started_at' 2>/dev/null)" || job_started=""
+  if [ -n "${job_started}" ]; then
+    now_epoch="$(date -u +%s)"
+    started_epoch="$(date -u -d "${job_started}" +%s 2>/dev/null)" || started_epoch=""
+    if [ -n "${started_epoch}" ]; then
+      run_minutes=$(( (now_epoch - started_epoch) / 60 ))
+      echo "run_minutes=${run_minutes}" >> "${GITHUB_OUTPUT}"
+      echo "First pass has lived ${run_minutes}m (structural-failure gate for the retry)."
+    fi
+  fi
+fi
+
 # --- Channel 1: official review ------------------------------------------------
 # --paginate + per-page count aggregation: /pulls/N/reviews pages at 30,
 # oldest first, so a busy PR's head-SHA verdict can sit beyond page 1.

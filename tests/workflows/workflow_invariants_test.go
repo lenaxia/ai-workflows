@@ -1717,6 +1717,57 @@ func TestPrReviewSalvageRetryFlowLocked(t *testing.T) {
 				"every PR; got %q", got)
 		}
 	}
+
+	// PR #69 (LLMSafeSpaces #1763 comment 6309172907): the retry family must
+	// ALSO carry the cancellation guard and the structural-failure gate.
+	// `!cancelled()`: with cancel-in-progress superseding a run mid-flight,
+	// the old `always()` fired the retry DURING teardown — observed as a
+	// 264s zombie re-running the review on an already-dead run. The
+	// run_minutes disjunct: 42% of first-pass failures die <60s (startup
+	// asserts, quota 429 storms) with an observed retry rescue rate of 0%;
+	// the gate requires a first pass that lived >= 3 minutes, failing open
+	// when check-verdict could not measure (run_minutes unset).
+	for _, stepName := range []string{"Run OpenCode (bounded retry)", "Salvage dumped verdict (after retry)"} {
+		block := stepBlock(body, stepName)
+		if block == "" {
+			t.Fatalf("pr-review.yml: no %q step found", stepName)
+		}
+		got := stepIfDirective(block)
+		if got == "" {
+			t.Errorf("pr-review.yml: %q has no `if:` directive", stepName)
+			continue
+		}
+		if !strings.Contains(got, "!cancelled()") {
+			t.Errorf("pr-review.yml: %q if: must carry !cancelled() — always() fires the LLM retry during "+
+				"supersession teardown (the 264s zombie, run 39529721655); got %q", stepName, got)
+		}
+		if !strings.Contains(got, `steps.check-verdict.outputs.run_minutes == ''`) {
+			t.Errorf("pr-review.yml: %q if: must carry the run_minutes == '' fail-open disjunct — without it an "+
+				"unmeasurable run (jobs API failure) silently disables the retry entirely; got %q", stepName, got)
+		}
+		if !strings.Contains(got, "fromJSON(steps.check-verdict.outputs.run_minutes) >= 3") {
+			t.Errorf("pr-review.yml: %q if: must carry the >= 3 structural-failure gate — instant/short first-pass "+
+				"deaths (startup asserts, quota 429s) have a 0%% observed retry rescue rate; got %q", stepName, got)
+		}
+	}
+
+	// PR #69: the warm-cache step must stay best-effort and preflight-gated.
+	// A cache miss that fails the step fails the review for zero reason, and
+	// a structurally refused author must not provision caches either.
+	cacheStep := stepBlock(body, "Warm Go caches")
+	if cacheStep == "" {
+		t.Fatal("pr-review.yml: no 'Warm Go caches' step found — the cold-compile premium (134s/113s hard-measured, " +
+			"#1763 comment 6309172907) returns on every suite-running round without it")
+	}
+	if !strings.Contains(cacheStep, "continue-on-error: true") {
+		t.Errorf("pr-review.yml: 'Warm Go caches' must be continue-on-error — a cache miss must never fail the review")
+	}
+	if !strings.Contains(cacheStep, `steps.preflight.outputs.author_allowed != 'false'`) {
+		t.Errorf("pr-review.yml: 'Warm Go caches' must gate on the preflight author check — refused authors get no side effects")
+	}
+	if !strings.Contains(cacheStep, "actions/cache@") {
+		t.Errorf("pr-review.yml: 'Warm Go caches' must use actions/cache (SHA-pinned per TestActionRefsAreSHAPinnedOrDeclaredReusable)")
+	}
 }
 
 // stepIfDirective returns the step's `if:` directive line, or "" if none.
@@ -2145,6 +2196,65 @@ func TestAuthDocsAssertDefaultTrust(t *testing.T) {
 	for _, f := range []string{"pr-review.yml", "ai-comment.yml"} {
 		if !strings.Contains(contents[f], "scripts/default-trusted-bots.sh") {
 			t.Errorf("%s: the authmode/preflight comments must reference scripts/default-trusted-bots.sh (the single source of trust truth), like the caller-contract header does.", f)
+		}
+	}
+}
+
+// TestWorkflowIfDirectivesNeverUseBareIndicator is the regression lock for
+// the 4f1f1a1 incident (PR #69 r1 review): "restoring" an `if:` directive
+// to the bare-expression form `if: !cancelled() && ...` made GitHub's
+// parser reject the ENTIRE workflow file — a leading `!` lexes as a YAML
+// TAG (as do the other c-indicator first characters: & * [ ] { } , # | >
+// ' " % @), and push run 39683073735 was a zero-job startup failure whose
+// display name was the raw file path. Every workflow test in this repo is
+// text-based, so the suite stayed green while the file was unloadable.
+// Rule: a bare (unquoted, non-${{ }}) `if:` value must not begin with a
+// YAML indicator character; wrap it in ${{ }} (or quote it) instead.
+func TestWorkflowIfDirectivesNeverUseBareIndicator(t *testing.T) {
+	ifRE := regexp.MustCompile(`(?m)^(\s*(?:-\s+)?if:)(\s*)(.*)$`)
+	// c-indicators per YAML 1.2 spec that break plain-scalar parsing when
+	// they appear as the FIRST character of the value.
+	indicators := "!&*[]{},#|>'\"%@`"
+	// Block-scalar intros (|, >, |-, |+, >2, …) are VALID as the whole
+	// value — the scalar body follows on the next lines (self-ai-comment.yml).
+	blockScalar := regexp.MustCompile(`^[|>][+-]?[0-9]*$`)
+	bad := 0
+	for _, f := range workflowFiles(t, invRoot(t)) {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			m := ifRE.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			value := strings.TrimSpace(m[3])
+			if value == "" || blockScalar.MatchString(value) {
+				continue
+			}
+			wrapped := strings.HasPrefix(value, "${{")
+			quoted := strings.HasPrefix(value, "'") || strings.HasPrefix(value, `"`)
+			if wrapped || quoted {
+				continue
+			}
+			if strings.ContainsRune(indicators, rune(value[0])) {
+				t.Errorf("%s:%d: bare `if:` value starts with YAML indicator %q — GitHub rejects the whole file (startup-failure class, run 39683073735); wrap in ${{ }} or quote:\n  %s",
+					f, i+1, string(value[0]), strings.TrimSpace(line))
+				bad++
+			}
+		}
+	}
+	if bad == 0 {
+		// Sanity: the repo has dozens of if: directives; a scanning blind
+		// spot would make this lock vacuous.
+		total := 0
+		for _, f := range workflowFiles(t, invRoot(t)) {
+			b, _ := os.ReadFile(f)
+			total += len(ifRE.FindAllStringIndex(string(b), -1))
+		}
+		if total < 20 {
+			t.Fatalf("scanner sanity: only %d if: directives found across workflows — the scan has gone blind", total)
 		}
 	}
 }

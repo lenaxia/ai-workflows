@@ -33,6 +33,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // checkVerdictScriptPath resolves scripts/check-verdict.sh relative to the repo.
@@ -62,6 +63,15 @@ func newCheckMockGH(t *testing.T, pages []string, reviews string) *mockGH {
 // returns combined output plus the delivered= value from GITHUB_OUTPUT.
 func runCheckVerdict(t *testing.T, m *mockGH) (string, string) {
 	t.Helper()
+	out, outs := runCheckVerdictEnv(t, m)
+	return out, outs["delivered"]
+}
+
+// runCheckVerdictEnv is runCheckVerdict with extra env (e.g. GITHUB_RUN_ID
+// for the run_minutes gate) and returns the full GITHUB_OUTPUT key/value
+// map so callers can assert secondary outputs like run_minutes.
+func runCheckVerdictEnv(t *testing.T, m *mockGH, extraEnv ...string) (string, map[string]string) {
+	t.Helper()
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "github_output")
 	cmd := exec.Command(checkVerdictScriptPath(t))
@@ -73,22 +83,42 @@ func runCheckVerdict(t *testing.T, m *mockGH) (string, string) {
 		"GH_TOKEN=faketoken",
 		"GITHUB_OUTPUT="+outFile,
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("check-verdict.sh must exit 0 (gate semantics live in outputs): %v\noutput:\n%s", err, out)
 	}
-	delivered := ""
+	outs := map[string]string{}
 	if b, rerr := os.ReadFile(outFile); rerr == nil {
 		for _, line := range strings.Split(string(b), "\n") {
-			if strings.HasPrefix(line, "delivered=") {
-				delivered = strings.TrimPrefix(line, "delivered=")
+			if i := strings.Index(line, "="); i > 0 {
+				outs[line[:i]] = line[i+1:]
 			}
 		}
 	}
-	if delivered == "" {
+	if outs["delivered"] == "" {
 		t.Fatalf("no delivered= line in GITHUB_OUTPUT:\n%s\noutput:\n%s", readGHAOutput(t, outFile), out)
 	}
-	return string(out), delivered
+	return string(out), outs
+}
+
+// writeJobsFixture installs the actions/runs/{id}/jobs response the mock gh
+// serves for check-verdict.sh's run_minutes lookup: the first job whose name
+// matches "review" carries startedAt.
+func writeJobsFixture(t *testing.T, m *mockGH, startedAt string) {
+	t.Helper()
+	jobs := map[string]any{
+		"jobs": []map[string]any{
+			{"name": "review", "started_at": startedAt},
+		},
+	}
+	b, err := json.Marshal(jobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, "jobs.json"), b, 0o644); err != nil {
+		t.Fatalf("write jobs fixture: %v", err)
+	}
 }
 
 func readGHAOutput(t *testing.T, path string) string {
@@ -268,4 +298,106 @@ func TestCheckVerdict_EmitsChannelResolutionLogs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- run_minutes: the structural-failure gate for the bounded retry (PR #69) --
+//
+// Basis (LLMSafeSpaces #1763 comment 6309172907): observed retry rescue rate
+// 0%; 42% of first-pass failures die in <60s (startup asserts, quota 429
+// storms) where a retry is pure waste. check-verdict.sh emits run_minutes so
+// the workflow's retry steps can require a first pass that actually lived.
+
+// PIN: with GITHUB_RUN_ID set and the jobs route serving a review job whose
+// started_at is ~5 minutes ago, the script emits run_minutes=4..5 (floor
+// arithmetic, ±1 for test/runner clock skew) alongside delivered=.
+func TestCheckVerdict_EmitsRunMinutes(t *testing.T) {
+	m := newCheckMockGH(t, []string{"[]"}, "[]")
+	writeJobsFixture(t, m, time.Now().Add(-5*time.Minute).UTC().Format(time.RFC3339))
+	out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+	rm, ok := outs["run_minutes"]
+	if !ok {
+		t.Fatalf("no run_minutes line in GITHUB_OUTPUT (jobs route served a 5m-old review job):\noutput:\n%s", out)
+	}
+	n := 0
+	if _, err := fmt.Sscanf(rm, "%d", &n); err != nil {
+		t.Fatalf("run_minutes must be an integer, got %q", rm)
+	}
+	if n < 4 || n > 5 {
+		t.Errorf("run_minutes for a started_at 5m ago must floor to 4..5 (skew tolerance), got %d", n)
+	}
+}
+
+// PIN: the emission fails OPEN — every lookup-failure variant (jobs route
+// error, no review-named job, unparsable started_at) emits NO run_minutes
+// line and leaves delivered semantics untouched, so the workflow gate's
+// `run_minutes == ”` disjunct lets the retry proceed as before.
+func TestCheckVerdict_RunMinutesFailsOpen(t *testing.T) {
+	t.Run("jobs route unavailable", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]") // no jobs.json => mock exits 1
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		if _, ok := outs["run_minutes"]; ok {
+			t.Errorf("jobs API failure must NOT emit run_minutes (fail-open), got %q\noutput:\n%s", outs["run_minutes"], out)
+		}
+		if outs["delivered"] != "false" {
+			t.Errorf("delivered must be unchanged by the failed lookup, got %q", outs["delivered"])
+		}
+	})
+	t.Run("no review-named job", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		if err := os.WriteFile(filepath.Join(m.dir, "jobs.json"),
+			[]byte(`{"jobs":[{"name":"test","started_at":"2026-10-21T00:00:00Z"}]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		if _, ok := outs["run_minutes"]; ok {
+			t.Errorf("jq null (no matching job) must NOT emit run_minutes, got %q\noutput:\n%s", outs["run_minutes"], out)
+		}
+	})
+	t.Run("unparsable started_at", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, "not-a-timestamp")
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		if _, ok := outs["run_minutes"]; ok {
+			t.Errorf("unparsable started_at must NOT emit run_minutes, got %q\noutput:\n%s", outs["run_minutes"], out)
+		}
+	})
+}
+
+// PIN: run_minutes measures JOB elapsed time (now - the review job's
+// started_at), not the LLM step alone — the documented approximation in
+// check-verdict.sh (checkout/preflight/cache-restore are included; the
+// gate's premise is a 0% rescue rate, so the residual overlap is accepted).
+// A clock-skewed FUTURE started_at yields a NEGATIVE run_minutes — visible
+// here on purpose: negative fails the >= 3 gate CLOSED (retry skipped),
+// never re-enables it.
+func TestCheckVerdict_RunMinutesMeasuresFromJobStart(t *testing.T) {
+	t.Run("two minute old job", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, time.Now().Add(-2*time.Minute).UTC().Format(time.RFC3339))
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		rm, ok := outs["run_minutes"]
+		if !ok {
+			t.Fatalf("expected run_minutes emission, got none\noutput:\n%s", out)
+		}
+		n := 0
+		if _, err := fmt.Sscanf(rm, "%d", &n); err != nil {
+			t.Fatalf("run_minutes must be an integer, got %q", rm)
+		}
+		if n < 1 || n > 2 {
+			t.Errorf("run_minutes for a 2m-old started_at must floor to 1..2 (job-elapsed semantics, ±skew), got %d", n)
+		}
+	})
+	t.Run("future started_at fails closed visibly", func(t *testing.T) {
+		m := newCheckMockGH(t, []string{"[]"}, "[]")
+		writeJobsFixture(t, m, time.Now().Add(10*time.Minute).UTC().Format(time.RFC3339))
+		out, outs := runCheckVerdictEnv(t, m, "GITHUB_RUN_ID=12345")
+		rm, ok := outs["run_minutes"]
+		if !ok {
+			t.Fatalf("future started_at must still emit run_minutes (the fail-closed skew behavior is pinned, not silent)\noutput:\n%s", out)
+		}
+		n := 0
+		if _, err := fmt.Sscanf(rm, "%d", &n); err != nil || n >= 0 {
+			t.Errorf("future started_at must emit a NEGATIVE run_minutes (fails the >=3 gate closed), got %q", rm)
+		}
+	})
 }

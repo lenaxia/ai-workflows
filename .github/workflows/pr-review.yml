@@ -244,6 +244,27 @@ jobs:
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"
 
+      - name: Warm Go caches
+        # Runtime drill-down (LLMSafeSpaces #1763 comment 6309172907, n=11
+        # runs): the reviewer self-runs Go verification on suite-rounds and
+        # pays a cold-module/build-cache premium every time — hard-measured
+        # 134s (go test 161.0 cold vs 27.0 warm) and 113s (go vet 262.1 cold
+        # vs 149 cached); corrected fleet estimate ~1 min/run, 1-2.5 min on
+        # suite-running rounds. Cache both trees keyed on go.mod/go.sum.
+        # Best-effort: a cache miss must never fail the review. SHA-pinned
+        # per the repo pin-by-SHA convention (mutable tag on a workflow that
+        # runs on consumer repos = supply-chain exposure); ~ paths stay
+        # runner-user-portable (self-hosted runners may not use /home/runner).
+        if: steps.preflight.outputs.author_allowed != 'false'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: pr-review-go-${{ runner.os }}-${{ hashFiles('go.sum', 'go.mod') }}
+          restore-keys: pr-review-go-${{ runner.os }}-
+
       - name: Run OpenCode
         # Gated on the pre-flight (author is a collaborator — otherwise the
         # CLI's assertPermissions kills the run pre-LLM; see the pre-flight
@@ -352,7 +373,7 @@ jobs:
         # already landed (so a skipped/never-run salvage cannot re-run the
         # LLM unnecessarily). The pre-flight gate keeps the retry from
         # re-attempting a structurally refused author.
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
+        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false' && (steps.check-verdict.outputs.run_minutes == '' || fromJSON(steps.check-verdict.outputs.run_minutes) >= 3) }}
         env:
           MODEL: openai-compatible/default
           AGENT: ""
@@ -380,7 +401,7 @@ jobs:
         # comment, so an ungated run here would POST A DUPLICATE review.
         id: salvage-retry
         continue-on-error: true
-        if: always() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false'
+        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false' && (steps.check-verdict.outputs.run_minutes == '' || fromJSON(steps.check-verdict.outputs.run_minutes) >= 3) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}

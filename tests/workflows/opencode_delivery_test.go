@@ -209,7 +209,14 @@ func TestOpenCodeTargetsMatchBuildMatrix(t *testing.T) {
 
 // TestSelfPrReviewTrustedBotsWired asserts the self-dogfood caller actually
 // exercises the trusted_app_bots path (reference adoption for #57/#59) —
-// without a live consumer the input would be dead code again.
+// without a live consumer the input would be dead code again. The list must
+// carry BOTH the propagation bot (dogfood-bump sync PRs, #1783 bootstrap
+// pattern) and the fleet actor bot (agentic-actor-coder[bot]) — the
+// orchestrator fleet's app identity opens PRs here and, like every app bot,
+// can never be a collaborator, so without this entry its PRs are refused
+// pre-LLM by the startup assert (observed on PR #69's first review run).
+// Consumer parity: LLMSafeSpaces pr-review.yml trusted_app_bots lists the
+// same fleet actor.
 func TestSelfPrReviewTrustedBotsWired(t *testing.T) {
 	root := workflowRoot(t)
 	b, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "self-pr-review.yml"))
@@ -217,7 +224,7 @@ func TestSelfPrReviewTrustedBotsWired(t *testing.T) {
 		t.Fatalf("read self-pr-review.yml: %v", err)
 	}
 	body := string(b)
-	if !strings.Contains(body, `trusted_app_bots: '["ai-workflows-propagation[bot]"]'`) {
-		t.Errorf("self-pr-review.yml: does not pass trusted_app_bots with ai-workflows-propagation[bot] — the reference adoption of the bot-identity path is gone (see #57/#59).")
+	if !strings.Contains(body, `trusted_app_bots: '["ai-workflows-propagation[bot]","agentic-actor-coder[bot]"]'`) {
+		t.Errorf("self-pr-review.yml: does not pass trusted_app_bots with ai-workflows-propagation[bot] AND agentic-actor-coder[bot] — the reference adoption of the bot-identity path (propagation bot, #57/#59) or the fleet actor admission (PR #69) is gone.")
 	}
 }

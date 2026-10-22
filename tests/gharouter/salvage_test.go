@@ -155,6 +155,27 @@ case "$*" in
       fi
     fi
     ;;
+  *"/actions/runs/"*"/jobs"*)
+    # check-verdict.sh's structural-failure gate (run_minutes emission,
+    # PR #69): GET a run's jobs with a --jq filter over jobs.json. Absent
+    # jobs.json => exit 1 (the "jobs API failed" fail-open variant).
+    if [ ! -f %[1]s/jobs.json ]; then
+      exit 1
+    fi
+    jqfilter=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--jq" ]; then
+        jqfilter="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ -n "$jqfilter" ]; then
+      jq -r "$jqfilter" %[1]s/jobs.json
+    else
+      cat %[1]s/jobs.json
+    fi
+    ;;
   *"/issues/"*"/comments"*)
     jqfilter=""
     slurp=0
