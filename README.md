@@ -317,6 +317,33 @@ exact login: never wildcards, never human accounts (humans have the
 collaborator path). For every actor OUTSIDE the default-trusted set, the
 default `[]` preserves the previous behavior exactly.
 
+**Review debounce — quiet window** (`pr-review` only; lever 4 of the runtime
+work, LLMSafeSpaces #1763 comment 6309172907): on push-heavy PRs the review
+pipeline used to burn whole inference passes that a newer push then
+cancelled mid-flight (on #1763: 17 of 31 runs, ~5h of compute, 2.6 runs per
+delivered verdict). `debounce_minutes` (number, default 10) makes the
+review job wait out a quiet window BEFORE any work: a newer push during the
+window cancels the waiting run (per-PR concurrency, cancel-in-progress) and
+the fresh run restarts the timer — the review only begins after the PR has
+been quiet for the window. Event-driven simulation on #1763's 31 runs: a
+10-minute window is verdict-neutral (12/12 completed verdicts retained,
+per-push coverage preserved) and saves ~21% of review compute. Longer
+windows save more but were rejected by the owner ruling for losing
+per-push verdict coverage. Override per caller or disable entirely:
+
+```yaml
+    with:
+      version: v0.2.0
+      project_name: myrepo
+      debounce_minutes: 0   # review immediately, no quiet window
+```
+
+The window is invisible to the structural-failure retry gate: the sleep step
+reports `debounce_seconds`, and `check-verdict.sh` subtracts it from
+`run_minutes`, so the gate (PR #69) keeps measuring the first pass's own
+lifetime — a debounced structurally-doomed pass still reads short and skips
+the futile retry.
+
 ### 4. Set up secrets and variables in the consumer repo
 
 | Setting | Type | Purpose |
