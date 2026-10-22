@@ -1,0 +1,6 @@
+#!/bin/bash
+[ "$1" = "get" ] || exit 0
+while read -r line; do case "$line" in host=github.com) GH=1;; esac; [ -z "$line" ] && break; done
+[ "${GH:-0}" = "1" ] || exit 0
+T=$(/tmp/opencode/bin/app-git-token 2>/dev/null) || exit 1
+printf 'username=x-access-token\npassword=%s\n' "$T"

@@ -1,0 +1,17 @@
+#!/bin/bash
+set -euo pipefail
+PEM=$(ls /home/sandbox/.secrets/agentic-actor-coder.*.private-key.pem 2>/dev/null | head -1)
+[ -z "$PEM" ] && { echo "no app pem materialized" >&2; exit 1; }
+APPID="${AGENTIC_ACTOR_CODER_APPID:?unset}"
+CACHE=/tmp/opencode/.app-token-cache
+if [ -s "$CACHE" ] && [ $(( $(date +%s) - $(stat -c %Y "$CACHE") )) -lt 3000 ]; then cat "$CACHE"; exit 0; fi
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+NOW=$(date +%s); HDR=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+PAY=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((NOW-60)) $((NOW+300)) "$APPID" | b64url)
+SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign "$PEM" | b64url)
+JWT="$HDR.$PAY.$SIG"
+INST=$(curl -s -H "Authorization: Bearer $JWT" https://api.github.com/app/installations | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d[0]["id"] if d else "")')
+[ -z "$INST" ] && { echo "no installation found" >&2; exit 1; }
+TOK=$(curl -s -X POST -H "Authorization: Bearer $JWT" https://api.github.com/app/installations/$INST/access_tokens | python3 -c 'import json,sys;print(json.load(sys.stdin).get("token",""))')
+[ -z "$TOK" ] && { echo "token mint failed" >&2; exit 1; }
+printf '%s' "$TOK" > "$CACHE"; chmod 600 "$CACHE"; printf '%s' "$TOK"
