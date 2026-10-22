@@ -15,6 +15,9 @@
 #
 # The PRs are NOT auto-merged (per design decision: review each sync).
 # Consumers can enable auto-merge individually if they choose.
+# Superseded sync PRs (older tags whose bump this one subsumes) ARE
+# auto-closed with their dead branches deleted — each release replaces the
+# previous sync in place instead of stacking a new PR under it.
 #
 # Triggered manually via workflow_dispatch for testing, or by tag push.
 #
@@ -299,6 +302,17 @@ jobs:
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated dogfood-bump to ${NEW_TAG} (re-targeted existing PR)."
 
+          # Auto-close superseded dogfood-bump PRs (same contract as the
+          # consumer legs' loop): every older sync/dogfood-pins-* PR is
+          # subsumed by this one. Best-effort per PR.
+          for pr in $(gh pr list --state open --limit 100 \
+              --json number,headRefName \
+              --jq ".[] | select(.headRefName | test(\"^sync/dogfood-pins-\")) | select(.headRefName != \"${BRANCH}\") | .number"); do
+            [ -n "$pr" ] || continue
+            gh pr close "$pr" --delete-branch \
+              --comment "Superseded by ${BRANCH} (the newest dogfood pin bump — older bumps are subsumed)." || true
+          done
+
       - name: Skip dogfood-bump PR (no push token)
         # Graceful degradation: without a Workflows-granted credential the
         # bump is computed (the Bump dogfood pins + Regenerate rendered
@@ -565,6 +579,22 @@ jobs:
             --base "${{ steps.base.outputs.branch }}" \
             --head "$BRANCH" || \
           gh pr edit "$BRANCH" --body "Updated sync to ai-workflows@${{ steps.ver.outputs.v }} (re-targeted existing PR)."
+
+          # Auto-close superseded sync PRs: every previous tag's sync branch
+          # is subsumed by this one (pins move in one hop; rendered prompts
+          # re-render from the newest tag). Left open, each release stacked
+          # another stale PR in every consumer — 13 repos accumulated ~100
+          # of them before this. Close every open PR headed by a
+          # sync/ai-workflows-v* branch other than this tag's, and delete
+          # the dead branch. Best-effort per PR (|| true): one un-closable
+          # stale PR must not fail the sync that supersedes it.
+          for pr in $(gh pr list --state open --limit 100 \
+              --json number,headRefName \
+              --jq ".[] | select(.headRefName | test(\"^sync/ai-workflows-v\")) | select(.headRefName != \"${BRANCH}\") | .number"); do
+            [ -n "$pr" ] || continue
+            gh pr close "$pr" --delete-branch \
+              --comment "Superseded by ${BRANCH} (the newest ai-workflows sync — older pin bumps and prompt renders are subsumed)." || true
+          done
 
       - name: Skip sync PR (no cross-repo token)
         if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true' && steps.changes.outputs.changed == 'true' && steps.auth.outputs.mode != 'app' && steps.auth.outputs.mode != 'pat'
