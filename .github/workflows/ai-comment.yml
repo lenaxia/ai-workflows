@@ -57,6 +57,15 @@ on:
         required: false
         default: "[]"
 
+# Central AI provider defaults — version-controlled here so consumers that
+# are happy with the default model/endpoint configure nothing. Precedence:
+# a consumer's own OPENAI_MODEL variable / OPENAI_API_BASE secret (set in
+# that repo) overrides these values. The API key itself is always a
+# per-repo secret (OPENAI_API_KEY) — it is never defaulted here.
+env:
+  AI_DEFAULT_MODEL: glm-5.3-flash
+  AI_DEFAULT_API_BASE: https://ai.thekao.cloud/v1
+
 jobs:
   respond:
     runs-on: ${{ inputs.runs_on }}
@@ -178,8 +187,8 @@ jobs:
           VARIANT: ""
           OIDC_BASE_URL: ""
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE || env.AI_DEFAULT_API_BASE }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || env.AI_DEFAULT_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: .ai-workflows/scripts/opencode-cli/run.sh
 

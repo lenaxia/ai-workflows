@@ -346,11 +346,25 @@ the futile retry.
 
 ### 4. Set up secrets and variables in the consumer repo
 
-| Setting | Type | Purpose |
-|---|---|---|
-| `OPENAI_API_KEY` | secret | LLM API key |
-| `OPENAI_API_BASE` | secret | LLM API base URL |
-| `OPENAI_MODEL` | variable | Model name (e.g. `gpt-4o`) |
+Model and endpoint defaults are **centralized in this repo** — declared as
+workflow-level `env` in each reusable workflow (`AI_DEFAULT_MODEL`,
+`AI_DEFAULT_API_BASE`). A consumer that is happy with the default model and
+endpoint configures **only the API key**:
+
+| Setting | Type | Required? | Purpose |
+|---|---|---|---|
+| `OPENAI_API_KEY` | secret | **Yes** (per-repo — keys stay tied to repos) | LLM API key |
+| `OPENAI_API_BASE` | secret | Optional | LLM API base URL — overrides the central default |
+| `OPENAI_MODEL` | variable | Optional | Model name — overrides the central default |
+
+Precedence: repo value > central default. The reusable workflows resolve
+this per run, e.g. `OPENAI_MODEL: ${{ vars.OPENAI_MODEL || env.AI_DEFAULT_MODEL }}`.
+
+**Changing the fleet default model** is a one-line edit in this repo (the
+`env:` block at the top of each of the four reusable workflows) plus a tag —
+no per-repo changes unless that repo sets its own override. The four copies
+are kept consistent by `TestAIDefaultsAreCentralAndOverridable` in
+`tests/workflows/workflow_invariants_test.go`.
 
 These are inherited by the reusable workflow via `secrets: inherit`. No
 `AI_WORKFLOWS_PIN` variable is needed — the pin is hardcoded in each
@@ -770,6 +784,7 @@ carries the same delivery gates as pr-review.yml.
 | Prompts contain wrong project content after sync | Templates are goKore-derived; consumer didn't fork | Add the affected files to `forked:` in the consumer config |
 | `Run OpenCode` fails: `couldn't find remote ref` | PR branch was deleted while the AI was still running | Don't merge+delete-branch while a review run is in progress |
 | AI job runs on GitHub-hosted runner instead of self-hosted | Caller didn't pass `runs_on` (defaults to `ubuntu-latest`) | Pass `runs_on: <your-label>` in the caller's `with:` |
+| A repo runs a model you didn't expect | No repo-level `OPENAI_MODEL`/`OPENAI_API_BASE` override, so the central defaults (`AI_DEFAULT_MODEL`/`AI_DEFAULT_API_BASE` in the reusable workflows) took effect | Set the repo-level `OPENAI_MODEL` variable and/or `OPENAI_API_BASE` secret to override — repo values always win over the fleet default |
 
 ## Consumers
 
