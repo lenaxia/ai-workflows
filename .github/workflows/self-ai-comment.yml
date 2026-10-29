@@ -11,8 +11,10 @@
 # triggers the real router (route-command.sh) + LLM call + footer posting at
 # the pinned tag — none of which `go test` covers.
 #
-# Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
-# OPENAI_MODEL (inherited via secrets: inherit).
+# Requires repo secret OPENAI_API_KEY only (inherited via secrets: inherit).
+# The model and endpoint fall back to the reusable workflow's central
+# defaults (AI_DEFAULT_MODEL / AI_DEFAULT_API_BASE); a repo-level
+# OPENAI_MODEL variable or OPENAI_API_BASE secret overrides them per repo.
 #
 # Serviced commands: only /review is gated because it is the only command whose
 # prompt (.github/prompts/pr-review.md) ships. The other commands (/fix,

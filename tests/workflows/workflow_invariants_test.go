@@ -2297,3 +2297,135 @@ func TestPropagateClosesSupersededSyncPRs(t *testing.T) {
 		}
 	}
 }
+
+// topLevelEnvValue extracts `KEY: value` from a workflow's top-level `env:`
+// block (the `env:` line starting at column 0, not a step-level one).
+// Returns "" when the block or key is absent. Deliberately not a YAML
+// parser — same trade-off as stepBlock.
+func topLevelEnvValue(body, key string) string {
+	inEnv := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if inEnv && !strings.HasPrefix(line, "  ") {
+			return "" // left the top-level env: block without finding key
+		}
+		if strings.HasPrefix(line, "env:") {
+			inEnv = true
+			continue
+		}
+		if inEnv {
+			if k, v, ok := strings.Cut(trimmed, ": "); ok && k == key {
+				return strings.Trim(v, `"'`)
+			}
+		}
+	}
+	return ""
+}
+
+// TestAIDefaultsAreCentralAndOverridable locks the central provider-default
+// contract: every reusable workflow that runs OpenCode (1) declares the
+// same workflow-level AI_DEFAULT_MODEL / AI_DEFAULT_API_BASE values, and
+// (2) resolves the Run OpenCode step's env through `repo value || central
+// default` fallback expressions.
+//
+// Why this exists: consumers happy with the fleet default model/endpoint
+// configure nothing; a consumer that needs something different sets its own
+// OPENAI_MODEL variable / OPENAI_API_BASE secret in its repo, which wins
+// over the default. Model churn (frequent) is then a one-line edit in this
+// repo instead of a variable/secret sweep across every consumer. The API
+// key itself is deliberately NOT defaulted — it stays a per-repo secret
+// (OPENAI_API_KEY), so the key's env line must never acquire an `||`
+// fallback to a central value.
+//
+// The values live in four workflow files (not one shared file) because
+// renovate-analysis.yml does no nested ai-workflows checkout to read a
+// defaults file from — so this test is the drift guard across the copies.
+func TestAIDefaultsAreCentralAndOverridable(t *testing.T) {
+	const (
+		wantModel    = "glm-5.3-flash"
+		wantEndpoint = "https://ai.thekao.cloud/v1"
+	)
+
+	workflows := []string{"ai-comment.yml", "issue-opened.yml", "pr-review.yml", "renovate-analysis.yml"}
+	root := invRoot(t)
+
+	// wantExpr maps each env key of the Run OpenCode step to the required
+	// expression. OPENAI_API_KEY must be the bare secret — no `||` default.
+	wantExpr := map[string]struct {
+		value      string
+		forbidOrOr bool // the key line must NOT contain an `||` fallback
+	}{
+		"OPENAI_API_KEY:":  {value: "${{ secrets.OPENAI_API_KEY }}", forbidOrOr: true},
+		"OPENAI_API_BASE:": {value: "${{ secrets.OPENAI_API_BASE || env.AI_DEFAULT_API_BASE }}"},
+		"OPENAI_MODEL:":    {value: "${{ vars.OPENAI_MODEL || env.AI_DEFAULT_MODEL }}"},
+	}
+
+	for _, wf := range workflows {
+		t.Run(wf, func(t *testing.T) {
+			body := readWorkflowFile(t, root, wf)
+
+			if got := topLevelEnvValue(body, "AI_DEFAULT_MODEL"); got != wantModel {
+				t.Errorf("%s: top-level env AI_DEFAULT_MODEL = %q, want %q — "+
+					"the central default drifted from the fleet value; update this test's "+
+					"wantModel constant together with the workflow files", wf, got, wantModel)
+			}
+			if got := topLevelEnvValue(body, "AI_DEFAULT_API_BASE"); got != wantEndpoint {
+				t.Errorf("%s: top-level env AI_DEFAULT_API_BASE = %q, want %q — "+
+					"the central default drifted from the fleet value; update this test's "+
+					"wantEndpoint constant together with the workflow files", wf, got, wantEndpoint)
+			}
+
+			// Every step that invokes OpenCode — "Run OpenCode" and any
+			// follow-ups like pr-review.yml's "Run OpenCode (bounded retry)"
+			// — must carry the fallbacks. An OpenCode step with bare
+			// `secrets.OPENAI_API_BASE` / `vars.OPENAI_MODEL` would run
+			// empty when the consumer sets no override.
+			var steps []string
+			for _, line := range strings.Split(body, "\n") {
+				if strings.HasPrefix(line, "      - name: Run OpenCode") {
+					steps = append(steps, strings.TrimPrefix(strings.TrimSpace(line), "- name: "))
+				}
+			}
+			if len(steps) == 0 {
+				t.Fatalf("%s: no 'Run OpenCode*' step found — workflow structure changed; update this test", wf)
+			}
+
+			for _, stepName := range steps {
+				step := stepBlock(body, stepName)
+				if step == "" {
+					t.Fatalf("%s: stepBlock found nothing for %q", wf, stepName)
+				}
+
+				found := map[string]bool{}
+				for _, line := range strings.Split(step, "\n") {
+					trimmed := strings.TrimSpace(line)
+					for key, req := range wantExpr {
+						if !strings.HasPrefix(trimmed, key) {
+							continue
+						}
+						found[key] = true
+						if !strings.Contains(trimmed, req.value) {
+							t.Errorf("%s: %q env %s = `%s`, want it to contain `%s` — "+
+								"the central-default fallback was removed or rewritten; consumers that "+
+								"unset the value would get an empty env instead of the fleet default",
+								wf, stepName, key, trimmed, req.value)
+						}
+						if req.forbidOrOr && strings.Contains(trimmed, "||") {
+							t.Errorf("%s: %q env %s contains an `||` fallback — "+
+								"the API key must stay tied to each consumer repo (per-repo secret), "+
+								"never defaulted to a central value", wf, stepName, key)
+						}
+					}
+				}
+				for key := range wantExpr {
+					if !found[key] {
+						t.Errorf("%s: %q step is missing env key %s entirely", wf, stepName, key)
+					}
+				}
+			}
+		})
+	}
+}

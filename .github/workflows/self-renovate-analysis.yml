@@ -14,8 +14,10 @@
 # `self-` prefix and with their own triggers/permissions) as described in the
 # reusable workflow's header.
 #
-# Requires repo secrets OPENAI_API_KEY / OPENAI_API_BASE and variable
-# OPENAI_MODEL (inherited via secrets: inherit).
+# Requires repo secret OPENAI_API_KEY only (inherited via secrets: inherit).
+# The model and endpoint fall back to the reusable workflow's central
+# defaults (AI_DEFAULT_MODEL / AI_DEFAULT_API_BASE); a repo-level
+# OPENAI_MODEL variable or OPENAI_API_BASE secret overrides them per repo.
 
 name: Renovate PR Analysis (self)
 
