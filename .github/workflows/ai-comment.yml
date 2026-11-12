@@ -142,6 +142,17 @@ jobs:
           export PR_HEAD_SHA
           source .ai-workflows/scripts/route-command.sh
           PROMPTS_DIR=.github/prompts OUT_FILE=/tmp/opencode_prompt.txt route_command
+          # Defensive re-bind (2026-11-12): on the self-hosted runner fleet,
+          # route_command's `export` of OUT_FILE/COMMAND does not reliably
+          # reach the step shell (fails `set -u` at the cat below with
+          # "OUT_FILE: unbound variable" -> unclosed __PROMPT_EOF__ heredoc;
+          # reproduces on pins v0.2.23-v0.2.25, clean on bash 5.2 locally).
+          # The values are literals this step owns — re-assert them instead of
+          # trusting the function's export, and keep the sourced script as the
+          # only writer of the prompt file.
+          OUT_FILE="${OUT_FILE:-/tmp/opencode_prompt.txt}"
+          COMMAND="${COMMAND:-}"
+          [ -s "$OUT_FILE" ] || { echo "route_command produced no prompt file" >&2; exit 1; }
           {
             echo "OPENCODE_PROMPT<<__PROMPT_EOF__"
             cat "$OUT_FILE"
