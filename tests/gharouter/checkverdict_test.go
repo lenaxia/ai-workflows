@@ -624,14 +624,20 @@ func TestCheckVerdict_RoundCheckGatedOnInjection(t *testing.T) {
 	})
 }
 
-// PIN: `lane:` must match the injected lane (GATE_LANE); unset skips.
+// PIN: `lane:` is normalized to the injected lane (GATE_LANE authoritative,
+// classify-lane.sh is the classification authority); unset skips. The
+// v0.2.28 rejection behavior (lane-mismatch killed whole verdicts — PR
+// #2034 r1) is deliberately gone.
 func TestCheckVerdict_LaneCheckGatedOnInjection(t *testing.T) {
 	body := markerCommentBody("APPROVE", headSHA) + "\n" + ledgerBlockV1("full", "approve")
 	m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
-	t.Run("injected lane mismatch rejects", func(t *testing.T) {
+	t.Run("injected lane mismatch is corrected, not rejected", func(t *testing.T) {
 		out, outs := runCheckVerdictEnv(t, m, append(gateTestEnv, "GATE_LANE=docs")...)
-		if outs["delivered"] != "false" || outs["rejection_reason"] != "lane-mismatch" {
-			t.Errorf("ledger lane=full vs injected GATE_LANE=docs must reject with lane-mismatch, got delivered=%q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+		if outs["delivered"] != "comment" {
+			t.Errorf("verdict with mislabeled lane must deliver (gate corrects to its own lane), got %q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+		}
+		if !strings.Contains(out, "corrected to injected lane 'docs'") {
+			t.Errorf("the correction must be logged for audit\noutput:\n%s", out)
 		}
 	})
 	t.Run("matching injected lane delivers", func(t *testing.T) {
@@ -698,15 +704,53 @@ func TestCheckVerdict_UnknownClassRejected(t *testing.T) {
 	}
 }
 
-// PIN: anchors are a closed list (issue:<n>, rule:<n>, claim:"...") —
-// anything else is an invalid verdict (design principle 3).
-func TestCheckVerdict_InvalidAnchorRejected(t *testing.T) {
+// PIN (spec §3, amended by the v0.2.29 rollout lesson): anchors outside the
+// closed list DEMOTE the finding to advisory — they never invalidate the
+// verdict. The v0.2.28 rejection behavior (invalid-anchor killed whole
+// verdicts over annotation cosmetics — PR #2034, three red rounds) is
+// deliberately gone. Demotion is the severity-laundering counterweight:
+// demoted findings stay visible in the ledger and the validator logs them.
+func TestCheckVerdict_InvalidAnchorDemoted(t *testing.T) {
 	line := `finding: id=no-anchor; class=style; anchor=issue-3; pointer=checkverdict_test.go:4; status=new; risk=x; fix_cost=y`
 	body := markerCommentBody("APPROVE", headSHA) + "\n" + ledgerBlockV1("full", "approve", line)
 	m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
 	out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
-	if outs["delivered"] != "false" || !strings.HasPrefix(outs["rejection_reason"], "invalid-anchor:") {
-		t.Errorf("anchor outside the closed list must reject with invalid-anchor:<anchor>, got delivered=%q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+	if outs["delivered"] != "comment" {
+		t.Errorf("anchor outside the closed list must demote, not reject, got delivered=%q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+	}
+	if !strings.Contains(out, "demoted to advisory") {
+		t.Errorf("the demotion must be logged for audit\noutput:\n%s", out)
+	}
+}
+
+// PIN: `claim:` anchors are quote-normalized — the natural unquoted
+// `claim:text` emission (PR #2034's actual rejection: invalid-anchor:claim:)
+// is accepted alongside the quoted form.
+func TestCheckVerdict_ClaimAnchorQuoteNormalized(t *testing.T) {
+	line := `finding: id=cite; class=docs-truth; anchor=claim:the spike ran and its evidence is committed; pointer=checkverdict_test.go:4; status=new; risk=x; fix_cost=y`
+	body := markerCommentBody("REQUEST_CHANGES", headSHA) + "\n" + ledgerBlockV1("full", "request-changes", line)
+	m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
+	out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+	if outs["delivered"] != "comment" {
+		t.Errorf("unquoted claim: anchor must be accepted, got delivered=%q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+	}
+}
+
+// PIN: a MERGE-GATING finding with an unresolvable anchor is demoted to
+// advisory — so it cannot gate an approve either way. This is the honest
+// statement of the demotion trade: annotation quality downgrades the
+// finding's force, the verdict still delivers, and the demotion is loud in
+// the log + ledger for audit.
+func TestCheckVerdict_DemotedBlockingFindingDoesNotGateApprove(t *testing.T) {
+	line := `finding: id=unanchored-bug; class=correctness; anchor=looks-wrong; pointer=checkverdict_test.go:4; status=new; risk=real bug, badly annotated; fix_cost=y`
+	body := markerCommentBody("APPROVE", headSHA) + "\n" + ledgerBlockV1("full", "approve", line)
+	m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
+	out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+	if outs["delivered"] != "comment" {
+		t.Errorf("demoted finding must not reject the verdict, got delivered=%q reason=%q\noutput:\n%s", outs["delivered"], outs["rejection_reason"], out)
+	}
+	if !strings.Contains(out, "unanchored-bug") || !strings.Contains(out, "demoted to advisory") {
+		t.Errorf("the demotion must name the finding for audit\noutput:\n%s", out)
 	}
 }
 

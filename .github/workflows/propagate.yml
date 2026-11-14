@@ -485,6 +485,36 @@ jobs:
             --into consumer/.github/prompts \
             --repo-root .
 
+      - name: Patch forked reviewer prompt (contract block)
+        # review-gate v1 deployment fix (PR LLMSafeSpaces#2033 lesson): the
+        # workflow's check-verdict.sh requires a REVIEW-LEDGER v1 block in
+        # every verdict, but FORKED consumers own their .github/prompts/ and
+        # the render step above skips them — so the v0.2.28 upgrade shipped a
+        # gate enforcing a format the forked prompt never taught, and every
+        # review in that repo went red. The reviewer template carries the
+        # contract in a marker-managed region; this step re-injects that
+        # region into a forked pr-review.md IN PLACE (project content
+        # untouched), making the contract track releases for every consumer.
+        if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true'
+        run: |
+          set -euo pipefail
+          F=consumer/.github/prompts/pr-review.md
+          if [ ! -f "$F" ]; then
+            echo "::warning::${{ matrix.consumer }} has no .github/prompts/pr-review.md (no AI review prompts shipped) — fork patch skipped."
+            exit 0
+          fi
+          /tmp/ai-sync patch-fork \
+            --consumer ${{ matrix.consumer }} \
+            --file "$F" \
+            --repo-root .
+          # HARD GATE — a release must not ship a prompt whose verdict format
+          # the shipped validator will reject. Red is louder than a week of
+          # mysteriously red review jobs in a consumer repo.
+          grep -q 'REVIEW-LEDGER v1' "$F" || {
+            echo "::error::${{ matrix.consumer }}: pr-review.md still lacks the REVIEW-LEDGER v1 contract after patching — refusing to ship this sync."
+            exit 1
+          }
+
       - name: Bump tag in consumer workflow files
         # The uses: ref is a hardcoded literal (GitHub doesn't allow vars
         # context in uses:). Bump it via sed so the consumer's workflows

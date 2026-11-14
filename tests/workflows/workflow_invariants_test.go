@@ -2438,3 +2438,29 @@ func TestAIDefaultsAreCentralAndOverridable(t *testing.T) {
 		})
 	}
 }
+
+// TestPropagatePatchesForkedReviewerPrompt pins the forked-prompt contract
+// patch (the PR LLMSafeSpaces#2033 lesson): the workflow upgrade can change
+// what check-verdict.sh requires of verdict bodies, while forked consumers
+// own their .github/prompts/ and the render step skips them — without this
+// step the gate enforces a format the forked prompt never taught, and every
+// review in the consumer goes red. The step must (a) run ai-sync patch-fork
+// on the consumer's pr-review.md and (b) hard-gate the release on the ledger
+// contract being present after the patch.
+func TestPropagatePatchesForkedReviewerPrompt(t *testing.T) {
+	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
+
+	if !strings.Contains(body, "Patch forked reviewer prompt (contract block)") {
+		t.Fatal("propagate.yml: no 'Patch forked reviewer prompt (contract block)' step found — " +
+			"forked consumers will ship with verdict formats the gate rejects (the v0.2.28/#2033 incident)")
+	}
+	for _, want := range []string{
+		`patch-fork`,
+		`grep -q 'REVIEW-LEDGER v1'`,
+		`::error::`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("propagate.yml: fork-patch step is missing %q — the hard gate must refuse to ship a sync whose patched prompt lacks the ledger contract", want)
+		}
+	}
+}

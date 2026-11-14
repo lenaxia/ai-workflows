@@ -216,6 +216,7 @@ gate_validate() {
   local reason=""
   local lane="" verdict="" lround="" lhead=""
   local -a cov_lines=() findings=() waived=()
+  local demoted_ids=""   # |id|… of findings whose anchor fell outside the closed list
   printf '%s' "${body}" > "${tmp}"
 
   # --- a1: exactly one ledger block -------------------------------------------
@@ -285,8 +286,27 @@ gate_validate() {
             new|fixed|still-open) ;;
             *) reason="ledger-malformed:finding-line"; break ;;
           esac
-          if ! [[ "${fanchor}" =~ ^(issue:[0-9]+|rule:[0-9]+|claim:\".*\")$ ]]; then
-            reason="invalid-anchor:${fanchor:0:60}"; break
+          # Anchor normalization + demotion (spec §3: "Unresolvable anchor →
+          # finding auto-demoted to advisory"). Two live lessons from the
+          # v0.2.28 rollout (PR #2034, three red rounds):
+          #   1. The strict `claim:".*"` QUOTE requirement rejected reviewers
+          #      writing the natural unquoted `claim:text` — annotation
+          #      cosmetics invalidating an otherwise-complete verdict.
+          #      Normalized: quotes stripped, both shapes accepted.
+          #   2. Any anchor outside the closed list DEMOTES the finding to
+          #      advisory instead of killing the verdict — a demoted finding
+          #      is visible in the ledger for audit (the severity-laundering
+          #      counterweight), while the verdict's other findings and the
+          #      class map keep working.
+          fanchor="${fanchor//\"/}"
+          # [[ =~ ]] — bash REGEX, not case-glob: `issue:[0-9]+` inside a
+          # case pattern means "one digit then a literal +", which silently
+          # demoted even perfectly-formed `issue:3` anchors.
+          if [[ "${fanchor}" =~ ^(issue:[0-9]+|rule:[0-9]+|claim:.+)$ ]]; then
+            :
+          else
+            demoted_ids="${demoted_ids}|${fid}|"
+            echo "gate: finding ${fid} anchor '${fanchor}' is outside the closed list — demoted to advisory (spec §3)" >&2
           fi
           fpath="${fptr%:*}"
           fline="${fptr##*:}"
@@ -334,7 +354,15 @@ gate_validate() {
     if [ "${lround}" != "${GATE_ROUND}" ]; then reason="round-mismatch"; fi
   fi
   if [ -z "${reason}" ] && [ -n "${GATE_LANE:-}" ]; then
-    if [ "${lane}" != "${GATE_LANE}" ]; then reason="lane-mismatch"; fi
+    # Lane normalization, not rejection: the injected lane is authoritative
+    # (classify-lane.sh is path-based; the reviewer merely restates it). A
+    # mislabeled `lane:` used to kill the whole verdict (lane-mismatch, PR
+    # #2034 r1) — now it is corrected and the class map below applies with
+    # the gate's lane.
+    if [ "${lane}" != "${GATE_LANE}" ]; then
+      echo "gate: verdict lane '${lane}' corrected to injected lane '${GATE_LANE}' (the gate's lane is authoritative)" >&2
+      lane="${GATE_LANE}"
+    fi
   fi
 
   # --- b: script-computed class map + docs-lane finding scope ------------------
@@ -342,7 +370,11 @@ gate_validate() {
     local f fid fclass fpath fline fstatus open_blocking=0
     for f in ${findings[@]:+"${findings[@]}"}; do
       IFS='|' read -r fid fclass fpath fline fstatus <<< "${f}"
-      if gate_is_blocking "${fclass}" "${lane}" && [ "${fstatus}" != "fixed" ]; then
+      # Demoted findings (anchor outside the closed list) never count as
+      # merge-gating — see the anchor normalization note above.
+      if [[ "${demoted_ids}" == *"|${fid}|"* ]]; then
+        :
+      elif gate_is_blocking "${fclass}" "${lane}" && [ "${fstatus}" != "fixed" ]; then
         open_blocking=$((open_blocking + 1))
       fi
       if [ "${lane}" = "docs" ] && ! gate_docs_path "${fpath}"; then

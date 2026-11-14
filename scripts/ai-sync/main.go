@@ -76,6 +76,28 @@ func main() {
 		if err := diffConsumer(root, consumer, into); err != nil {
 			fail("diff %s: %v", consumer, err)
 		}
+	case "patch-fork":
+		var file string
+		// review-gate v1 deployment fix (the LLMSafeSpaces lesson, PR #2033):
+		// the workflow's check-verdict.sh REQUIRES a REVIEW-LEDGER v1 block in
+		// every verdict, but forked consumers own their .github/prompts/ and
+		// propagate never updated them — so the workflow upgrade shipped a
+		// gate enforcing a format the forked prompt never taught, and every
+		// review went red (missing-ledger-block). The contract region of the
+		// reviewer template is now marker-delimited and this subcommand
+		// re-injects it into a forked prompt in place: the fork keeps its
+		// project-specific content, the canonical contract tracks releases.
+		fs.StringVar(&consumer, "consumer", "", "consumer name (without .yaml) — selects vars + override blocks for rendering")
+		fs.StringVar(&file, "file", "", "path to the consumer's forked pr-review.md — patched in place")
+		fs.StringVar(&repoRoot, "repo-root", ".", "ai-workflows repo root")
+		fs.Parse(os.Args[2:])
+		if consumer == "" || file == "" {
+			fail("--consumer and --file are required")
+		}
+		root := resolveRoot(repoRoot)
+		if err := patchForkedPrompt(root, consumer, file); err != nil {
+			fail("patch-fork %s: %v", consumer, err)
+		}
 	case "list":
 		fs.StringVar(&repoRoot, "repo-root", ".", "ai-workflows repo root")
 		fs.Parse(os.Args[2:])
@@ -100,6 +122,10 @@ Commands:
   render --all --into <dir>               render all consumers into <dir>/<name>/
   diff   --consumer <name> --into <dir>   show files that would change
   list                                   list configured consumers
+  patch-fork --consumer <name> --file <path>
+                                         inject/refresh the marker-managed
+                                         review-contract region of a forked
+                                         pr-review.md in place
 
 Consumer configs live at <root>/consumers/<name>.yaml.
 Templates live at <root>/templates/prompts/*.md.
@@ -200,6 +226,127 @@ func renderTemplate(root, tmplDir, filename string, cfg consumerConfig) ([]byte,
 // file. Answers "can I edit this?" for engineers browsing consumer repos.
 func managedBanner(version string) string {
 	return fmt.Sprintf("<!-- Managed by lenaxia/ai-workflows@%s — do not edit. Override via consumers/<repo>.yaml. -->", version)
+}
+
+// ---------------------------------------------------------------------------
+// Forked-prompt contract patching (review-gate v1)
+// ---------------------------------------------------------------------------
+
+// Marker-delimited managed region of the reviewer template. The PREFIX is
+// version-stable on purpose: patching finds and replaces a fork's existing
+// contract region regardless of which version planted it, so a version bump
+// cannot strand a stale region next to a fresh one.
+const (
+	contractStartPrefix = "<!-- ai-workflows:review-contract"
+	contractEnd         = "<!-- /ai-workflows:review-contract -->"
+	contractTemplate    = "pr-review.md"
+)
+
+// patchForkedPrompt renders the reviewer template for the consumer (resolving
+// {{ .project_name }} etc.), extracts its marker-delimited contract region,
+// and injects that region into the forked prompt file: replacing any existing
+// contract region(s), or appending when the fork has none. Everything outside
+// the region is the fork's own content and is left byte-identical.
+func patchForkedPrompt(root, consumer, filePath string) error {
+	cfg, err := loadConsumerConfig(root, consumer)
+	if err != nil {
+		return err
+	}
+	rendered, err := renderTemplate(root, filepath.Join(root, "templates", "prompts"), contractTemplate, cfg)
+	if err != nil {
+		return fmt.Errorf("render %s: %w", contractTemplate, err)
+	}
+	block, err := extractContractBlock(string(rendered))
+	if err != nil {
+		return err
+	}
+	fork, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("read forked prompt: %w", err)
+	}
+	patched := applyContractBlock(string(fork), block)
+	info, err := os.Stat(filePath)
+	mode := os.FileMode(0o644)
+	if err == nil {
+		mode = info.Mode()
+	}
+	if err := os.WriteFile(filePath, []byte(patched), mode); err != nil {
+		return fmt.Errorf("write forked prompt: %w", err)
+	}
+	action := "appended contract block"
+	if strings.Contains(string(fork), contractStartPrefix) {
+		action = "replaced contract block"
+	}
+	fmt.Printf("patch-fork %s: %s into %s\n", consumer, action, filePath)
+	return nil
+}
+
+// extractContractBlock pulls the marker-delimited region out of rendered
+// template output. The template NOT carrying the markers is a template bug
+// (the block is what keeps forked prompts shippable against the shipped
+// validator) — loud error, never a silent empty patch.
+func extractContractBlock(rendered string) (string, error) {
+	start := indexMarker(rendered, contractStartPrefix)
+	if start < 0 {
+		return "", fmt.Errorf("template %s has no %s marker — the contract region is unmanageable", contractTemplate, contractStartPrefix)
+	}
+	endRel := strings.Index(rendered[start:], contractEnd)
+	if endRel < 0 {
+		return "", fmt.Errorf("template %s has %s but no closing %s", contractTemplate, contractStartPrefix, contractEnd)
+	}
+	return rendered[start : start+endRel+len(contractEnd)], nil
+}
+
+// applyContractBlock returns fork content with every existing contract region
+// removed and exactly one fresh block appended at the end. Appending (not
+// in-place re-insertion) keeps the patch deterministic for forks with and
+// without a prior region; the block carries the submission instructions, so
+// ending the prompt with the canonical contract is the correct last word for
+// the reviewer.
+func applyContractBlock(fork, block string) string {
+	out := fork
+	for {
+		start := indexMarker(out, contractStartPrefix)
+		if start < 0 {
+			break
+		}
+		endRel := strings.Index(out[start:], contractEnd)
+		if endRel < 0 {
+			// Unterminated region (fork hand-edit gone wrong): drop from the
+			// marker to EOF — a dangling start marker would corrupt the
+			// prompt worse than truncation.
+			out = out[:start]
+			break
+		}
+		out = out[:start] + out[start+endRel+len(contractEnd):]
+	}
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return block + "\n"
+	}
+	return out + "\n\n" + block + "\n"
+}
+
+// indexMarker finds a contract START marker by PREFIX (so `v1`/`v2` all
+// match), requiring it at line start in the common case but tolerating
+// leading whitespace.
+func indexMarker(s, prefix string) int {
+	needle := prefix
+	if !strings.HasPrefix(needle, "<!--") {
+		needle = "<!-- " + strings.TrimPrefix(prefix, "<!--")
+	}
+	// tolerate optional leading spaces before the comment opener
+	for _, p := range []string{needle, "  " + needle, "    " + needle} {
+		if i := strings.Index(s, p); i >= 0 {
+			// must start a line (after optional spaces) to be a region marker,
+			// not a passing mention in prose
+			lineStart := strings.LastIndex(s[:i], "\n") + 1
+			if strings.TrimSpace(s[lineStart:i]) == "" {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // ---------------------------------------------------------------------------
