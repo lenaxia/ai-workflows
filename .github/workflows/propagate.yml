@@ -490,33 +490,34 @@ jobs:
         # context in uses:). Bump it via sed so the consumer's workflows
         # point at the new tag. Also bump the version: input to match.
         #
-        # OLD_TAG discovery is now robust against consumers that lack
-        # ai-comment.yml: grep the first available workflow file in a fixed
-        # order and extract the existing pin from there.
+        # Each file is bumped from its OWN discovered pin (see the loop
+        # comment below — per-file drift is real and bit v0.2.27).
         if: steps.target.outputs.skip != 'true' && steps.co.outputs.ok == 'true'
         working-directory: consumer
         run: |
           set -euo pipefail
           NEW_TAG="${{ steps.ver.outputs.v }}"
-          OLD_TAG=""
-          for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml .github/workflows/renovate-analysis.yml; do
-            [ -f "$wf" ] || continue
-            # Match either a SHA pin (40 hex) or a vX.Y.Z tag pin after '@'.
-            # \w does NOT include '-', and every consumer workflow filename
-            # (pr-review, ai-comment, renovate-analysis, issue-opened) is
-            # hyphenated — \w+\.yml silently matched nothing, leaving
-            # OLD_TAG empty and the sed bump a no-op. Use [\w-]+ so the pin
-            # is actually discovered and bumped.
-            OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/[\w-]+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
-            [ -n "$OLD_TAG" ] && break
-          done
-          echo "Bumping ${OLD_TAG:-<none>} -> ${NEW_TAG} in ${{ matrix.consumer }}"
+          # Bump EACH FILE from its OWN discovered pin — never one global
+          # OLD_TAG for all files. A consumer's caller files can legitimately
+          # drift across pins (LLMSafeSpaces ran ai-comment.yml@v0.2.26 while
+          # pr-review.yml sat at v0.2.25): a single OLD_TAG taken from
+          # whichever file is scanned first, then sed-replaced everywhere,
+          # silently skips every file pinned at a different tag — the v0.2.27
+          # sync (LLMSafeSpaces PR #2029) shipped with pr-review.yml still at
+          # v0.2.25 because of exactly that.
+          # Match either a SHA pin (40 hex) or a vX.Y.Z tag pin after '@'.
+          # \w does NOT include '-', and every consumer workflow filename
+          # (pr-review, ai-comment, renovate-analysis, issue-opened) is
+          # hyphenated — \w+\.yml silently matched nothing, leaving the tag
+          # undiscovered and the sed bump a no-op. Use [\w-]+ so the pin is
+          # actually discovered and bumped.
           for wf in .github/workflows/ai-comment.yml .github/workflows/issue-opened.yml .github/workflows/pr-review.yml .github/workflows/renovate-analysis.yml; do
             [ -f "$wf" ] || continue
-            if [ -n "$OLD_TAG" ]; then
-              sed -i "s|@${OLD_TAG}|@${NEW_TAG}|g" "$wf"
-              sed -i "s|version: ${OLD_TAG}|version: ${NEW_TAG}|g" "$wf"
-            fi
+            OLD_TAG="$(grep -oP 'ai-workflows/.github/workflows/[\w-]+\.yml@\K([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+)' "$wf" 2>/dev/null | head -1 || true)"
+            [ -n "$OLD_TAG" ] || continue
+            echo "Bumping $wf: ${OLD_TAG} -> ${NEW_TAG}"
+            sed -i "s|@${OLD_TAG}|@${NEW_TAG}|g" "$wf"
+            sed -i "s|version: ${OLD_TAG}|version: ${NEW_TAG}|g" "$wf"
           done
           # Record the pin for auditability
           cat > ai-workflows.config.yml <<EOF

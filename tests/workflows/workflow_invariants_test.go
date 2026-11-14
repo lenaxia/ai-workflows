@@ -1050,14 +1050,17 @@ func TestPropagatePRUsesResolvedBaseBranch(t *testing.T) {
 // This test locks the fix the PR body claims but (per the PR #21 review)
 // was originally not regression-guarded.
 //
-// Precision note: the step contains TWO `for wf in ...` loops — one for
-// OLD_TAG discovery (grep) and one for sed application. Both reference the
-// three workflow files, so a naive "step contains pr-review.yml" assertion
-// passes even when discovery is reverted to ai-comment.yml-only (the
-// application loop still has it). This test instead pins the exact
-// discovery-loop header line, which is the one that actually feeds the
-// grep. If a future refactor reorders the files, the test name tells the
-// maintainer exactly what to update.
+// Precision note (updated for the v0.2.28 per-file bump fix): the step now
+// has ONE `for wf in ...` loop that discovers each file's OWN pin (grep)
+// and seds it in place — the previous two-loop shape (one global OLD_TAG
+// discovered from the first file scanned, then sed-replaced everywhere)
+// silently skipped files pinned at a different tag: LLMSafeSpaces ran
+// ai-comment.yml@v0.2.26 next to pr-review.yml@v0.2.25, so the v0.2.27
+// sync bumped only ai-comment.yml (PR LLMSafeSpaces#2029 shipped with
+// pr-review.yml still at v0.2.25). The loop-shape contract (per-file
+// discovery, no short-circuit, all four caller files covered) is pinned by
+// TestPropagateBumpsEachCallerFileFromItsOwnPin; this test pins the
+// discovery REGEX behavior against real `grep -P` execution.
 func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 	body := readWorkflowFile(t, invRoot(t), "propagate.yml")
 	bumpStep := stepBlock(body, "Bump tag in consumer workflow files")
@@ -1065,19 +1068,25 @@ func TestPropagateBumpStepUsesMultiFileDiscovery(t *testing.T) {
 		t.Fatal("propagate.yml: no 'Bump tag in consumer workflow files' step found - workflow structure changed; update this test")
 	}
 
-	// The discovery loop is the `for wf in ...` line that precedes the
-	// `OLD_TAG=` assignment. Pin its exact shape: all four consumer
-	// workflow files in the discovery order. This is what makes OLD_TAG
-	// discovery robust against consumers that lack ai-comment.yml (or any
-	// of the other files).
-	const discoveryLoopHeader = "for wf in .github/workflows/ai-comment.yml .github/workflows/pr-review.yml .github/workflows/issue-opened.yml .github/workflows/renovate-analysis.yml; do"
-	if !strings.Contains(bumpStep, discoveryLoopHeader) {
-		t.Errorf("propagate.yml: 'Bump tag' step is missing the multi-file discovery loop header.\n"+
-			"Expected to find: %q\n"+
-			"A single-file discovery (ai-comment.yml only) would silently no-op the pin bump "+
-			"for any consumer that lacks ai-comment.yml: OLD_TAG comes back empty, the `if [ -n \"$OLD_TAG\" ]` "+
-			"guard fails, and sed runs on zero files. The fix discovers OLD_TAG from whichever of the three "+
-			"workflow files the consumer actually has.\nStep body was:\n%s", discoveryLoopHeader, bumpStep)
+	// The discovery loop must cover ALL FOUR caller files in one loop
+	// (order-agnostic): a caller file absent from the loop drifts forever,
+	// and separate discovery/bump loops reintroduce the global-OLD_TAG
+	// partial bump.
+	const loopHeader = "for wf in"
+	idx := strings.Index(bumpStep, loopHeader)
+	if idx < 0 {
+		t.Fatal("propagate.yml: 'Bump tag' step has no per-file loop")
+	}
+	loopBody := bumpStep[idx:]
+	for _, wf := range []string{
+		".github/workflows/ai-comment.yml",
+		".github/workflows/pr-review.yml",
+		".github/workflows/issue-opened.yml",
+		".github/workflows/renovate-analysis.yml",
+	} {
+		if !strings.Contains(loopBody, wf) {
+			t.Errorf("propagate.yml: the bump loop does not cover %s — that caller's pin would never be bumped", wf)
+		}
 	}
 
 	// The discovery regex must accept BOTH pin shapes this repo's consumers
