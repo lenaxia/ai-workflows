@@ -70,10 +70,10 @@ on:
         required: false
         default: "[]"
       debounce_minutes:
-        description: "Quiet-window debounce (lever 4, #1763 comment 6309172907): the review waits this many minutes for a quieter PR before doing ANY work; a newer push during the window cancels the waiting run (per-PR concurrency, cancel-in-progress) and restarts the timer on the fresh run. Event-driven simulation on #1763's 31 runs: a 10-minute window is verdict-neutral (12/12 completed verdicts retained) and saves ~21% of review compute by not burning passes that supersession kills mid-flight. 0 disables the debounce (review starts immediately)."
+        description: "Quiet-window debounce (lever 4, #1763 comment 6309172907): the review waits this many minutes for a quieter PR before doing ANY work; a newer push during the window cancels the waiting run (per-PR concurrency, cancel-in-progress) and restarts the timer on the fresh run. Event-driven simulation on #1763's 31 runs: the window is verdict-neutral (12/12 completed verdicts retained) and saves ~21% of review compute by not burning passes that supersession kills mid-flight. Default lowered 10 -> 3 (review-gate v1): with the ledger fix-loop in place, fix-round pushes arrive minutes apart and the quiet window is paid UNCONDITIONALLY by every non-superseded run, so at 10 minutes the worst measured fix loop (39 blocking rounds, the pre-gate baseline) burned ~6.5h of pure debounce wall-clock per PR against the ~170-compute-hour loop total — 3 minutes keeps the supersession-cancel protection (pushes that land within the window still cancel a sleep, not a pass) while cutting that per-round dead time by 70%. 0 disables the debounce (review starts immediately)."
         type: number
         required: false
-        default: 10
+        default: 3
 
 # Central AI provider defaults — version-controlled here so consumers that
 # are happy with the default model/endpoint configure nothing. Precedence:
@@ -270,10 +270,100 @@ jobs:
             "⚠️ Automated review could not run: PR author @${PR_AUTHOR} is not a repository collaborator, and the reviewer's startup permission assert (which checks the PR author for pull_request events) refuses non-collaborators before any review pass. To get this PR reviewed, a member with write access can post \`/review\` on this thread (the comment path checks the commenter instead), or — if @${PR_AUTHOR} is a trusted app bot — add its exact login to the caller's \`trusted_app_bots\` input (app bots can never be collaborators; the input bypasses the assert for listed bots only). Job will be marked failed so the gap stays visible."
 
       - name: Build prompt
+        # Beyond the existing context assembly, this step now also injects the
+        # review-gate v1 state (spec docs/review-gate-v1-spec.md "Workflow
+        # wiring"): lane, round, ci-status, reconciled ledger, PR body, linked
+        # issue acceptance criteria, README-LLM.md rule titles, and the budget
+        # rule. Design principle 6: CI state is INJECTED into the prompt —
+        # polling by the reviewer is pointless and forbidden (CI idle-wait was
+        # 54% of every 28.4-min reviewer turn: `gh run watch` blocking 10min +
+        # sleep-poll loops 5min), and check-verdict.sh validates any CI claim
+        # in the verdict against GATE_CI_STATUS. Design principle 10: the
+        # guarantees live in scripts; this section carries only state.
+        #
+        # BEST-EFFORT CONTRACT: every lookup below is `|| true`-guarded so a
+        # missing or failing scripts/review-gate/ helper (Worker B lands them
+        # separately) degrades to an OMITTED context line — never a red
+        # workflow. The GATE_* envs are likewise exported only when computed:
+        # check-verdict.sh skips the corresponding validation check when the
+        # env is unset (round/lane/ci checks degrade; head/ledger checks stay).
+        #
+        # Merge-base choice (documented per workstream instruction): the diff
+        # for classify-lane is computed against origin/<base> where <base> is
+        # the PR's base ref from the event payload
+        # (github.event.pull_request.base.ref) — NOT a hardcoded origin/main,
+        # because PRs may target non-default bases. The consumer checkout is
+        # fetch-depth: 0, so the merge-base diff is local (no network).
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # ---- review-gate state (all best-effort, all degradable) ----------
+          gate_lane=""
+          gate_round=""
+          gate_ci=""
+          ledger_json=""
+          pr_body=""
+          issue_criteria=""
+          rule_titles=""
+          merge_base="$(git merge-base "origin/${BASE_REF}" HEAD 2>/dev/null || true)"
+          if [ -n "${merge_base}" ]; then
+            # classify-lane reads the merge-base diff on stdin (spec CLI
+            # contract 1: "stdin or --diff-file <path>"; stdin needs no temp
+            # file and keeps the diff out of the workspace).
+            gate_lane="$(git diff --name-only "${merge_base}..HEAD" 2>/dev/null \
+              | .ai-workflows/scripts/review-gate/classify-lane.sh 2>/dev/null || true)"
+          fi
+          gate_round="$(.ai-workflows/scripts/review-gate/review-state.sh rounds "${PR_NUMBER}" 2>/dev/null || true)"
+          gate_ci_raw="$(.ai-workflows/scripts/review-gate/review-state.sh ci-status "${PR_HEAD_SHA}" 2>/dev/null || true)"
+          case "${gate_ci_raw}" in
+            ci=success|ci=failure|ci=pending|ci=none) gate_ci="${gate_ci_raw#ci=}" ;;
+          esac
+          # Reconciled ledger: open blocking/advisory findings, waivers,
+          # rejected waivers, converged flag — the reviewer's ground truth for
+          # what is already raised, fixed, or waived (so it never re-litigates
+          # a waived advisory or re-reviews from scratch; full re-review on
+          # every push was a measured root cause of non-convergence).
+          ledger_json="$(.ai-workflows/scripts/review-gate/reconcile-ledger.sh "${PR_NUMBER}" 2>/dev/null | jq -c . 2>/dev/null || true)"
+          pr_body="$(gh pr view "${PR_NUMBER}" --repo "${REPOSITORY}" --json body -q .body 2>/dev/null || true)"
+          # Linked issue acceptance criteria — best-effort: first #N reference
+          # in the PR body, then the Acceptance Criteria section of that issue
+          # (falling back to the issue body's checklist lines, then a capped
+          # prefix). Design principle 3: blocking findings anchor to this list
+          # (anchor=issue:<n>), so the reviewer must be able to SEE it.
+          issue_number="$(printf '%s' "${pr_body}" | grep -Eo '#[0-9]+' | head -1 | tr -d '#' || true)"
+          if [ -n "${issue_number}" ]; then
+            issue_body="$(gh issue view "${issue_number}" --repo "${REPOSITORY}" --json body -q .body 2>/dev/null || true)"
+            issue_criteria="$(printf '%s' "${issue_body}" \
+              | awk '/[Aa]cceptance [Cc]riteria/{seen=1} seen && /^# / && ++n > 1 {exit} seen' \
+              | head -c 2000 || true)"
+            if [ -z "${issue_criteria}" ]; then
+              issue_criteria="$(printf '%s' "${issue_body}" | grep -E '^[[:space:]]*[-*] \[' | head -20 | head -c 2000 || true)"
+            fi
+          fi
+          # README-LLM.md numbered rule titles — the anchor vocabulary for
+          # rule:<n> findings (best-effort: consumer forks may not have one).
+          rule_titles="$(grep -E '^[0-9]+\. ' README-LLM.md 2>/dev/null | head -30 | head -c 2000 || true)"
+          # Injection size caps: 23% of the measured reviewer turn went to
+          # oversized output; oversized input is the same trap from the other
+          # side. Each injected blob is capped (body 4k, ledger 8k, criteria
+          # and rules 2k) — the verdict needs the ledger and the diff, not an
+          # essay corpus.
+          trunc() { # <string> <max-chars> -> stdout, truncated with a marker
+            local s="$1" n="$2"
+            if [ "${#s}" -gt "${n}" ]; then
+              printf '%s\n…[truncated, %d of %d chars]' "${s:0:${n}}" "${#s}" "${n}"
+            else
+              printf '%s' "${s}"
+            fi
+          }
+
+          # ---- assemble the prompt (existing contract, unchanged prefix) ----
           {
             echo "OPENCODE_PROMPT<<__PROMPT_EOF__"
             cat .github/prompts/context.md
@@ -284,8 +374,54 @@ jobs:
             printf '\n\n**Commit under review (headRefOid):** `%s`\nRecord this exact SHA in the `**Commit reviewed:**` line at the top of your review body.\n' "$PR_HEAD_SHA"
             printf '\n\nA new pull request has been opened. Perform a thorough review and submit it as a formal GitHub pull request review via `gh pr review` (APPROVE only if there are zero findings; otherwise REQUEST_CHANGES, which is blocking). Never use a COMMENT-only review.\n'
             printf '\nVerdict-delivery contract (overrides any conflicting instruction in the prompts above): FIRST always try to submit the verdict as a formal review event against the recorded head SHA. If GitHub refuses the review submission itself — HTTP 422 / "GitHub Actions is not permitted to approve pull requests" / any "not permitted" refusal on the SUBMIT call (not on reads) — you MUST still deliver the complete review: post it as ONE ordinary PR comment whose first line is exactly `<!-- ai-workflows-verdict: APPROVE sha=<full head SHA copied from the prompt> -->` (or REQUEST_CHANGES instead of APPROVE), followed by the full review body in the required format (**Commit reviewed:** line, ## Code Review, all sections, ### Verdict). Never deliver nothing. Never submit a COMMENT-only review, a dishonest verdict, or a verdict pinned to any other SHA.\n'
+            # ---- review-gate v1 injected context (spec "Workflow wiring") ----
+            # Each line is omitted when its lookup failed — a partially
+            # injected review beats no review (the best-effort contract
+            # above); the ledger's round/lane fields default to this context.
+            printf '\n\n## Review gate context (script-injected — authoritative; never recompute or poll)\n'
+            if [ -n "${gate_lane}" ]; then
+              printf -- '- lane: %s (path/content classification of the merge-base diff; echo it in the ledger `lane:` field)\n' "${gate_lane}"
+            fi
+            if [ -n "${gate_round}" ]; then
+              printf -- '- round: %s (prior bot verdicts). Budget rule: after round 3 you may not introduce new blocking demand classes; fix-verification is always in scope.\n' "${gate_round}"
+            fi
+            if [ -n "${gate_ci}" ]; then
+              printf -- '- ci-status: %s (all runs on the head SHA). CI polling is forbidden and pointless — `gh run watch` and sleep-poll loops were 54%% of reviewer turn time; any ci=<state> claim in your verdict is validated against this injection by check-verdict.sh.\n' "${gate_ci}"
+            fi
+            if [ -n "${ledger_json}" ]; then
+              printf -- '- current finding ledger (reconciled: open blocking/advisory, waived, rejected_waivers, converged; waive ids are stable — never re-raise a waived advisory, mark fixed findings status=fixed keeping the id):\n```json\n%s\n```\n' "$(trunc "${ledger_json}" 8000)"
+            fi
+            if [ -n "${pr_body}" ]; then
+              printf -- '- PR body (anchor vocabulary: claim:"<verbatim substring>"):\n<pr-body>\n%s\n</pr-body>\n' "$(trunc "${pr_body}" 4000)"
+            fi
+            if [ -n "${issue_criteria}" ]; then
+              printf -- '- linked issue #%s acceptance criteria (anchor vocabulary: issue:<n> = criterion n in this list):\n<issue-criteria>\n%s\n</issue-criteria>\n' "${issue_number}" "$(trunc "${issue_criteria}" 2000)"
+            fi
+            if [ -n "${rule_titles}" ]; then
+              printf -- '- README-LLM.md numbered rule titles (anchor vocabulary: rule:<n> = rule n here):\n<rules>\n%s\n</rules>\n' "$(trunc "${rule_titles}" 2000)"
+            fi
             echo "__PROMPT_EOF__"
           } >> "$GITHUB_ENV"
+
+          # ---- GATE_* env for the downstream check-verdict steps ------------
+          # check-verdict.sh validates the delivered verdict against the SAME
+          # injection the prompt carried (head vs PR_HEAD_SHA is intrinsic;
+          # round/ci/lane only when injected here — the spec's "matches
+          # injected" contract). Unset lookups stay unset: the corresponding
+          # check is skipped downstream, keeping the gate runnable even while
+          # Worker B's scripts/review-gate/ helpers are still landing.
+          if [ -n "${gate_lane}" ]; then
+            echo "GATE_LANE=${gate_lane}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${gate_round}" ]; then
+            echo "GATE_ROUND=${gate_round}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${gate_ci}" ]; then
+            echo "GATE_CI_STATUS=${gate_ci}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${BASE_REF}" ]; then
+            echo "GATE_BASE_REF=${BASE_REF}" >> "$GITHUB_ENV"
+          fi
 
       - name: Warm Go caches
         # Runtime drill-down (LLMSafeSpaces #1763 comment 6309172907, n=11
@@ -376,6 +512,16 @@ jobs:
           # re-opening the doomed-retry waste it exists to stop. Unset when
           # the debounce is disabled or skipped — the script treats that as 0.
           DEBOUNCE_SECONDS: ${{ steps.debounce.outputs.debounce_seconds }}
+          # Review-gate v1 (spec §4): the verdict body is validated against
+          # the SAME injection the prompt carried. Unset GATE_* (lookup
+          # failed in Build prompt) => the matching check is skipped
+          # in-script; head/ledger/class-map/coverage/pointer checks always
+          # run. On violation the script emits delivered=false +
+          # rejection_reason — the bounded retry below consumes the reason.
+          GATE_ROUND: ${{ env.GATE_ROUND }}
+          GATE_CI_STATUS: ${{ env.GATE_CI_STATUS }}
+          GATE_LANE: ${{ env.GATE_LANE }}
+          GATE_BASE_REF: ${{ env.GATE_BASE_REF }}
         run: .ai-workflows/scripts/check-verdict.sh
 
       - name: Salvage dumped verdict
@@ -404,6 +550,42 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: .ai-workflows/scripts/salvage-verdict.sh
 
+      - name: Build retry prompt (rejection-aware)
+        # Review-gate v1 (spec §4): an INVALID verdict (delivered=false +
+        # rejection_reason — missing/malformed ledger, head/round mismatch,
+        # approve-with-open-blocking, coverage gap, invalid pointer, CI-claim
+        # mismatch) must feed the bounded retry "like undelivered verdicts
+        # do". This step appends the machine-readable rejection reason to the
+        # base prompt and re-exports it AS OPENCODE_PROMPT — deliberately the
+        # SAME variable name, because the retry step's env contract is pinned
+        # (`PROMPT: ${{ env.OPENCODE_PROMPT }}` in
+        # TestOpenCodeSitesCarryEnvContract) and both gates run the retry's
+        # prompt through the same delivery path. A structural failure (no
+        # verdict at all, rejection_reason empty) still gets the generic
+        # no-verdict note, so the retry prompt is never silently identical to
+        # the first attempt.
+        #
+        # Condition mirrors the retry family's delivered=='false' guard (plus
+        # the preflight gate): this step only REWRITES the prompt env; the
+        # run_minutes gate stays on the retry step itself — building a prompt
+        # is free, and skipping the rewrite when the retry won't run would
+        # only add a third condition to keep in lockstep.
+        if: ${{ always() && steps.check-verdict.outputs.delivered == 'false' && steps.preflight.outputs.author_allowed != 'false' }}
+        env:
+          REJECTION_REASON: ${{ steps.check-verdict.outputs.rejection_reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "OPENCODE_PROMPT<<__PROMPT_EOF__"
+            printf '%s' "${OPENCODE_PROMPT}"
+            if [ -n "${REJECTION_REASON}" ]; then
+              printf '\n\n---\n\n**YOUR PREVIOUS VERDICT WAS REJECTED BY THE REVIEW-GATE VALIDATOR** (rejection_reason: `%s`). This reason is machine-generated — e.g. missing-ledger-block, head-mismatch, round-mismatch, approve-with-open-blocking:<n>, coverage-missing:<files>, invalid-pointer:<path>:<line>, ci-claim-mismatch:<state>. Fix EXACTLY this defect and re-deliver the complete verdict through the same delivery contract as before (formal review first; the sha-pinned marker-comment fallback unchanged). A verdict body without a valid REVIEW-LEDGER v1 block is never counted as delivered.\n' "${REJECTION_REASON}"
+            else
+              printf '\n\n---\n\nYour previous attempt delivered NO verdict at all (neither channel posted). Re-run the review and deliver the complete verdict per the delivery contract above — verdict body, REVIEW-LEDGER v1 block included.\n'
+            fi
+            echo "__PROMPT_EOF__"
+          } >> "$GITHUB_ENV"
+
       - name: Run OpenCode (bounded retry)
         # One retry of the LLM review when neither the first run nor the
         # salvage produced a verdict (transient model/API failures — e.g. a
@@ -423,7 +605,18 @@ jobs:
         # already landed (so a skipped/never-run salvage cannot re-run the
         # LLM unnecessarily). The pre-flight gate keeps the retry from
         # re-attempting a structurally refused author.
-        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && steps.salvage.outputs.salvaged != 'true' && steps.preflight.outputs.author_allowed != 'false' && (steps.check-verdict.outputs.run_minutes == '' || fromJSON(steps.check-verdict.outputs.run_minutes) >= 3) }}
+        #
+        # Review-gate v1: the `|| rejection_reason != ''` disjunct makes an
+        # INVALID verdict retry even when salvage "succeeded" — salvage
+        # upgrading a malformed verdict-marker comment to an official review
+        # does not make the verdict VALID, and without this disjunct the
+        # salvaged=true guard would swallow exactly the rejection-retry the
+        # spec requires ("invalid verdicts feed the bounded retry like
+        # undelivered verdicts do"). A valid comment-channel verdict emits no
+        # rejection_reason and still skips the retry (re-running the LLM to
+        # relearn a delivered verdict is the waste this guard exists to
+        # stop).
+        if: ${{ !cancelled() && steps.check-verdict.outputs.delivered == 'false' && (steps.salvage.outputs.salvaged != 'true' || steps.check-verdict.outputs.rejection_reason != '') && steps.preflight.outputs.author_allowed != 'false' && (steps.check-verdict.outputs.run_minutes == '' || fromJSON(steps.check-verdict.outputs.run_minutes) >= 3) }}
         env:
           MODEL: openai-compatible/default
           AGENT: ""
@@ -470,20 +663,52 @@ jobs:
         # the Run OpenCode steps' own exit status was masked via
         # continue-on-error above. Red failure is reserved for NEITHER
         # channel having posted — never a silent green.
+        #
+        # Review-gate v1 addition: the job is ALSO red when a verdict was
+        # delivered but its body failed validation (rejection_reason present
+        # — invalid ledger, head/round mismatch, approve-with-open-blocking,
+        # coverage gap, invalid pointer, CI-claim mismatch). Deliberately NOT
+        # a failure mode: findings remaining open. Convergence gates MERGING
+        # (templates/prompts/merge.md runs reconcile-ledger.sh and refuses
+        # until converged), never reviewing — an honest request-changes
+        # verdict with open findings is the loop working as designed.
+        #
+        # The fresh check-verdict.sh run below is redirected at a private
+        # GITHUB_OUTPUT copy so BOTH output keys (delivered,
+        # rejection_reason) can be read; the stdout channel line keeps the
+        # exact sed-parsed prefix both verify gates depend on (pinned by
+        # TestVerifyGatesParseCheckVerdictContract).
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Review-gate v1: validate against the same injection the prompt
+          # carried (unset GATE_* => matching checks skipped, in-script).
+          GATE_ROUND: ${{ env.GATE_ROUND }}
+          GATE_CI_STATUS: ${{ env.GATE_CI_STATUS }}
+          GATE_LANE: ${{ env.GATE_LANE }}
+          GATE_BASE_REF: ${{ env.GATE_BASE_REF }}
         run: |
           set -euo pipefail
-          delivered="$(.ai-workflows/scripts/check-verdict.sh | sed -n 's/^Verdict delivery channel: \([a-z]*\).*/\1/p')"
+          gate_out="$(mktemp)"
+          delivered="$(GITHUB_OUTPUT="${gate_out}" .ai-workflows/scripts/check-verdict.sh | sed -n 's/^Verdict delivery channel: \([a-z]*\).*/\1/p')"
+          rejection="$(grep -E '^rejection_reason=' "${gate_out}" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+          rm -f "${gate_out}"
           case "${delivered}" in
             review)
+              if [ -n "${rejection}" ]; then
+                echo "ERROR: the official bot verdict against HEAD ${PR_HEAD_SHA} was REJECTED by review-gate validation (rejection_reason: ${rejection}). An invalid verdict is not a delivered verdict — failing the job. The bounded retry already received this reason; findings remaining open is NOT a failure (convergence gates merging, not reviewing)." >&2
+                exit 1
+              fi
               echo "Official bot verdict on record against HEAD ${PR_HEAD_SHA} — delivered."
               ;;
             comment)
+              if [ -n "${rejection}" ]; then
+                echo "ERROR: the marker-comment verdict against HEAD ${PR_HEAD_SHA} was REJECTED by review-gate validation (rejection_reason: ${rejection}). An invalid verdict is not a delivered verdict — failing the job. The bounded retry already received this reason; findings remaining open is NOT a failure (convergence gates merging, not reviewing)." >&2
+                exit 1
+              fi
               echo "Verdict delivered as a marker comment against HEAD ${PR_HEAD_SHA} (official review channel refused/unavailable — issue #46 fallback)."
               ;;
             *)

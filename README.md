@@ -63,6 +63,100 @@ Reviews also state the exact commit they cover: the PR `headRefOid` is injected
 into the review prompt, and the review body format requires a leading
 `**Commit reviewed:** <SHA>` line.
 
+## Review gate v1
+
+The AI review loop was redesigned around a script-enforced finding ledger;
+`docs/review-gate-v1-spec.md` is the binding contract. The measured baseline
+that motivated it:
+
+| Measured baseline (pre-redesign) | Value |
+|---|---|
+| Blocking review rounds per PR (4 PRs observed) | 39 / 20 / 19 / 8 |
+| Blocking verdicts across 5 PRs | ~91 |
+| Loop compute cost | ~170 hours |
+| Reviewer turn (28.4 min) spent idle-watching CI | 54% (`gh run watch` blocking 10 min + sleep-poll loops 5 min) |
+| …spent generating oversized verdict bodies | 23% |
+| …actual review work | 17% |
+| Manual `/review` nudges → delivered verdicts on one PR (nudges raced pushes) | 22 → 3 |
+
+Root causes: any finding blocks, mandatory finding-enumeration, full re-review
+on every push, no round budget, and the reviewer self-assigned CI verification.
+The redesign moves every guarantee into scripts (`scripts/review-gate/`);
+prompts carry only judgment guidance.
+
+**Convergence predicate.** Merging is gated on *ledger convergence*, never on
+review-passing or round counts: `reconcile-ledger.sh` computes
+`converged = (no open blocking-class findings) AND (every open advisory is
+fixed-or-waived)`, and `/merge` (`merge.md`) refuses until `converged=true`
+plus a head-match (`review-state.sh head-check`) — then squash-merges and
+posts a stats comment (rounds, findings by class, waived list, rejected
+waivers). A review job is green whenever a **valid** verdict is delivered:
+findings remaining open do NOT red the review — convergence gates merging,
+not reviewing.
+
+**Class → blocking map (script-enforced).** The reviewer emits classes and
+never the word "blocking"; the script counts:
+
+| Lane | Blocking (merge-gating) | Advisory (waivable) |
+|---|---|---|
+| `full` | `correctness`, `robustness`, `security`, `test-integrity` | `docs-truth`, `style` |
+| `docs` | `docs-truth` | `style` |
+
+`verdict: approve` is only valid when the script-computed open-blocking count
+is 0. Waivers: the author posts `waive <finding-id>: <reason>` as a PR
+comment; advisory ids only — a blocking-class waiver attempt is ignored and
+surfaced as `rejected_waivers`. Blocking findings require resolvable anchors
+(`issue:<n>` criterion, `rule:<n>` README-LLM rule, `claim:"<verbatim PR-body
+substring>"`).
+
+**New scripts** (`scripts/review-gate/`, ubuntu-latest bash/git/gh/jq/python3,
+`--from-file`/env-testable): `classify-lane.sh` (path/content lane from the
+merge-base diff), `review-state.sh` (`rounds` / `ci-status` / `head-check`),
+`reconcile-ledger.sh` (ledger rebuild + `converged`), and a validation layer
+in `scripts/check-verdict.sh`: every detected verdict body must carry exactly
+one parseable `REVIEW-LEDGER v1` block whose `head:`/`round:`/`lane:` match
+the injected context; approve must agree with the computed open-blocking
+count; coverage must list every changed file (`git diff
+--name-only origin/<base>...HEAD`, merge-base from the event payload); up to
+3 finding pointers are spot-checked against the checkout; CI claims in the
+body must match the injected CI state.
+
+**Injected context (pr-review.yml Build prompt)** — appended to the assembled
+prompt, each line omitted (never fatal) when its lookup fails: `lane`,
+`round`, `ci-status`, the reconciled ledger JSON, the PR body, the linked
+issue's acceptance criteria (best-effort grep), README-LLM.md numbered rule
+titles (best-effort), and the budget rule: *after round 3 you may not
+introduce new blocking demand classes; fix-verification is always in scope.*
+The same values ride the workflow env for the gates:
+
+| Env var (workflow-injected) | Feeds | Meaning |
+|---|---|---|
+| `GATE_LANE` | prompt + `check-verdict.sh` | `full\|docs`, from `classify-lane.sh` on the merge-base diff |
+| `GATE_ROUND` | prompt + `check-verdict.sh` | prior bot verdicts (`review-state.sh rounds`); ledger `round:` must match |
+| `GATE_CI_STATUS` | prompt + `check-verdict.sh` | `success\|failure\|pending\|none`; verdict CI claims must match — polling CI is forbidden *and pointless* |
+| `GATE_BASE_REF` | `check-verdict.sh` | PR base ref for the changed-file diff |
+
+(`GATE_CHANGED_FILES` exists only as a test override in `check-verdict.sh`;
+production always derives the changed-file list from git.)
+
+**Rejection flow.** A verdict that fails validation emits
+`delivered=false` + `rejection_reason=<machine-readable one-liner>`
+(`missing-ledger-block`, `head-mismatch`, `round-mismatch`, `lane-mismatch`,
+`approve-with-open-blocking:<n>`, `coverage-missing:<files>`,
+`invalid-pointer:<path>:<line>`, `ci-claim-mismatch:<state>`, …). The
+rejection reason is appended to the bounded retry's prompt — invalid verdicts
+feed the retry exactly like undelivered verdicts — and the verify gate is red
+only on "no verdict delivered" or "verdict invalid", never on "findings open".
+
+**Debounce retuned.** `debounce_minutes` default dropped 10 → 3: with the
+fix-loop converging, pushes arrive minutes apart and the unconditional quiet
+window is paid nearly every round (at 10 minutes, the worst measured loop's
+39 rounds burned ~6.5h of pure debounce per PR); 3 minutes keeps the
+supersession-cancel protection at 30% of the dead-time cost. The input stays
+caller-overridable; `/review` and bare `/ai` on a PR share the auto reviews'
+`ai-review-<PR#>` group (see Concurrency above) so a push cancels a nudged
+review instead of letting it post a stale verdict.
+
 ## File classification contract
 
 Every file in a consumer's `.github/prompts/` falls into one of three buckets:

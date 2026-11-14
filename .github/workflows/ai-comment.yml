@@ -69,6 +69,21 @@ env:
 jobs:
   respond:
     runs-on: ${{ inputs.runs_on }}
+    # Review-verdict paths join the SAME per-PR group as auto reviews
+    # (`ai-review-<PR#>`, cancel-in-progress): `/review` and bare `/ai` on a
+    # PR both deliver verdicts (route-command.sh routes both to pr-review.md),
+    # so a push landing mid-nudge must CANCEL the nudged review — measured
+    # pre-fix: 22 manual /review nudges produced only 3 verdicts on one PR
+    # because nudged reviews raced pushes and posted verdicts on stale SHAs.
+    # Code-change commands (`/fix`, `/implement`, `/test`, `/security`,
+    # `/design`, `/merge`, …) keep the unique-per-comment `ai-cmd-<PR#>-<id>`
+    # group (README "Concurrency / cancellation"): they must run to
+    # completion and never be cancelled by a review or a push. `/ai` with or
+    # without trailing text shares the review group by design (commit
+    # 374b026): on a PR without text it IS a re-review verdict path, and the
+    # router's fallback arm defaults unrecognized comments to `/ai`, so the
+    # conservative grouping keeps every possibly-verdict-producing run
+    # cancelable by a superseding push.
     concurrency:
       group: >-
         ${{ (startsWith(github.event.comment.body, '/review')

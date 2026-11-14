@@ -9,24 +9,34 @@ import (
 )
 
 // TestPrReviewDebounceWired pins lever 4 of the PR-review runtime work
-// (LLMSafeSpaces #1763 comment 6309172907, owner ruling: 10-minute quiet
-// window ONLY — the 20-45-minute variants were rejected because they trade
+// (LLMSafeSpaces #1763 comment 6309172907, owner ruling: quiet-window
+// debounce ONLY — the 20-45-minute variants were rejected because they trade
 // away per-push verdict coverage). The debounce is a quiet window: the
 // reusable workflow waits debounce_minutes before doing ANY work; a newer
 // push during the window cancels the waiting run (per-PR concurrency,
 // cancel-in-progress) and the fresh run restarts the timer. Event-driven
-// simulation on #1763's 31 runs: verdict-neutral at 10 minutes (12/12
-// verdicts retained), ~21% of review compute saved — the mid-flight
-// supersession burns (17/31 runs, 5.1h wall) never start.
+// simulation on #1763's 31 runs: verdict-neutral (12/12 verdicts retained),
+// ~21% of review compute saved — the mid-flight supersession burns (17/31
+// runs, 5.1h wall) never start.
+//
+// PIN UPDATE (review-gate v1, spec docs/review-gate-v1-spec.md): the default
+// was 10 (the original lever-4 ruling) and is now 3 — the gate verdict
+// measurement contradicted the old pin: with the ledger fix-loop converging,
+// fix-round pushes arrive minutes apart and the unconditional quiet window
+// is paid by nearly every non-superseded round (at 10 minutes the worst
+// measured loop's 39 blocking rounds burned ~6.5h of pure debounce wall-
+// clock per PR against the ~170-compute-hour loop total). 3 minutes keeps
+// the supersession-cancel protection at 30% of the dead-time cost. The
+// input stays caller-overridable; 0 still disables entirely.
 //
 // Load-bearing details pinned here:
-//   - the input exists, is a number, defaults to 10, and documents 0=off;
+//   - the input exists, is a number, defaults to 3, and documents 0=off;
 //   - the sleep step is the FIRST step of the review job (a superseding
 //     push must cancel a sleep, not a half-done pass — that ordering is
 //     the entire saving);
 //   - the step is gated off at 0 (disabled debounce = zero overhead);
 //   - the arithmetic converts minutes to seconds exactly once (a raw
-//     `sleep ${DEBOUNCE_MINUTES}` would wait 10 SECONDS — a silent no-op
+//     `sleep ${DEBOUNCE_MINUTES}` would wait 3 SECONDS — a silent no-op
 //     debounce);
 //   - the per-PR concurrency group carries cancel-in-progress: true (the
 //     restart-the-timer mechanism; without it the window just delays
@@ -38,10 +48,10 @@ func TestPrReviewDebounceWired(t *testing.T) {
 	for _, required := range []string{
 		"debounce_minutes:",
 		"type: number",
-		"default: 10",
+		"default: 3",
 	} {
 		if !strings.Contains(body, required) {
-			t.Errorf("pr-review.yml: debounce input missing %q — the quiet-window contract (default 10, overridable per caller) is gone", required)
+			t.Errorf("pr-review.yml: debounce input missing %q — the quiet-window contract (default 3 after the review-gate v1 retune, overridable per caller) is gone", required)
 		}
 	}
 
