@@ -641,6 +641,45 @@ func TestCheckVerdict_MarkdownHeadingPrefixedLedgerDelivers(t *testing.T) {
 	})
 }
 
+// PIN (PR #81 r1, robustness finding): an unterminated ledger block (opening
+// marker + scalars, no END-REVIEW-LEDGER) must NOT deliver — GNU sed's
+// unterminated range runs to EOF and the parse loop never required the
+// closing marker, while reconcile-ledger.sh parse_block HARD-ERRORS the same
+// body ("missing END-REVIEW-LEDGER"): a gate-delivered verdict that /merge
+// permanently refuses with the retry loop exempt (delivered=true) — the
+// #2077 failure class via a different trigger. Both marker shapes reject
+// with ledger-malformed:unterminated-block.
+func TestCheckVerdict_UnterminatedLedgerBlockRejected(t *testing.T) {
+	// unterminatedBlock mirrors the real verdict shape minus END-REVIEW-LEDGER:
+	// the block scalars are complete and trailing body content (## Summary)
+	// follows — pre-fix the sed range ran to EOF, the prose fell to
+	// tolerated-unknown, and the verdict DELIVERED. (Coverage must not be the
+	// body's final line: `while read` drops a trailing unterminated line, a
+	// separate artifact that would mask this pin with coverage-missing.)
+	unterminatedBlock := func(opening string) string {
+		return opening + "\nround: 1\nhead: " + headSHA + "\nlane: full\nverdict: approve\ncoverage: README.md\n\n## Summary\n\nFine overall — no findings.\n"
+	}
+	t.Run("bare marker, comment channel", func(t *testing.T) {
+		body := markerCommentBody("APPROVE", headSHA) + "\n" + unterminatedBlock("REVIEW-LEDGER v1")
+		m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
+		out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+		if outs["delivered"] != "false" || outs["rejection_reason"] != "ledger-malformed:unterminated-block" {
+			t.Errorf("unterminated block (bare marker) must reject with ledger-malformed:unterminated-block, got delivered=%q reason=%q\noutput:\n%s",
+				outs["delivered"], outs["rejection_reason"], out)
+		}
+	})
+	t.Run("prefixed marker, review channel", func(t *testing.T) {
+		body := "**Commit reviewed:** `" + headSHA + "`\n\n" + unterminatedBlock("## REVIEW-LEDGER v1")
+		reviews := "[" + reviewWithBody("APPROVED", headSHA, body) + "]"
+		m := newCheckMockGH(t, []string{"[]"}, reviews)
+		out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+		if outs["delivered"] != "false" || outs["rejection_reason"] != "ledger-malformed:unterminated-block" {
+			t.Errorf("unterminated block (heading-prefixed marker) must reject with ledger-malformed:unterminated-block, got delivered=%q reason=%q\noutput:\n%s",
+				outs["delivered"], outs["rejection_reason"], out)
+		}
+	})
+}
+
 // PIN: the ledger `head:` must match the PR head at prompt-build time — a
 // verdict pinned to another commit is stale even when freshly posted.
 func TestCheckVerdict_RejectsHeadMismatch(t *testing.T) {

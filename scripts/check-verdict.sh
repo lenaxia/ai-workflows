@@ -215,9 +215,21 @@ gate_validate() {
   blockfile="${tmp}.block"
   local reason=""
   local lane="" verdict="" lround="" lhead=""
+  local end_seen=0   # PR #81 r1: the parse loop must SEE END-REVIEW-LEDGER —
+                     # an unterminated block delivers here but hard-errors in
+                     # reconcile-ledger.sh ("missing END-REVIEW-LEDGER"), a
+                     # gate-delivered verdict /merge refuses forever (retry
+                     # exempt: delivered=true). Reject it here instead, with
+                     # a machine-readable reason the retry prompt can fix.
   local -a cov_lines=() findings=() waived=()
   local demoted_ids=""   # |id|… of findings whose anchor fell outside the closed list
-  printf '%s' "${body}" > "${tmp}"
+  # printf '%s\n' (not '%s'): both extraction channels strip the body's
+  # trailing newline (command substitution), and an unterminated final line
+  # is silently DROPPED by `while IFS= read -r` — pre-existing artifact that
+  # used to be harmless (the dropped line was usually END-REVIEW-LEDGER, a
+  # no-op skip) but now starves the end_seen completeness check (PR #81 r1)
+  # and could silently swallow a trailing coverage: line. Normalize here.
+  printf '%s\n' "${body}" > "${tmp}"
 
   # --- a1: exactly one ledger block -------------------------------------------
   # Issue #80 (LLMSafeSpaces PR #2077): the reviewer model emitted the marker
@@ -249,7 +261,11 @@ gate_validate() {
         line="${BASH_REMATCH[2]}"
       fi
       case "${line}" in
-        "REVIEW-LEDGER v1"|"END-REVIEW-LEDGER"|"") continue ;;
+        "REVIEW-LEDGER v1"|"") continue ;;
+        "END-REVIEW-LEDGER")
+          end_seen=1
+          continue
+          ;;
         round:*)
           val="$(gate_trim "${line#round:}")"
           if [[ "${val}" =~ ^[0-9]+$ ]]; then lround="${val}"; else reason="ledger-malformed:round"; break; fi
@@ -355,6 +371,7 @@ gate_validate() {
       elif [ -z "${lhead}" ]; then reason="ledger-malformed:head"
       elif [ -z "${lane}" ]; then reason="ledger-malformed:lane"
       elif [ -z "${verdict}" ]; then reason="ledger-malformed:verdict"
+      elif [ "${end_seen}" -ne 1 ]; then reason="ledger-malformed:unterminated-block"
       fi
     fi
   fi
