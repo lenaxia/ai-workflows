@@ -617,6 +617,53 @@ func TestReconcileLedger_LatestVerdictWins(t *testing.T) {
 	}
 }
 
+// gateLedgerBodyHeadingPrefixed is gateLedgerBody with BOTH structural
+// marker lines emitted as markdown headings — the glm-5.3-flash emission
+// shape from LLMSafeSpaces PR #2077 (ai-workflows issue #80, 8/8 verdicts).
+func gateLedgerBodyHeadingPrefixed(verdict, head string, round int, lane string, findings, waives []string) string {
+	body := gateLedgerBody(verdict, head, round, lane, findings, waives)
+	body = strings.Replace(body, "\nREVIEW-LEDGER v1\n", "\n## REVIEW-LEDGER v1\n", 1)
+	return strings.Replace(body, "END-REVIEW-LEDGER\n", "## END-REVIEW-LEDGER\n", 1)
+}
+
+// TestReconcileLedger_MarkdownHeadingPrefixedMarkersReconcile (issue #80): a
+// verdict whose marker lines are markdown headings must enter the ledger
+// identically — blocking/advisory findings counted, verdict/head/round
+// echoed. Pre-fix, parse_block saw the body as ledger-less (returned None):
+// the verdict would be silently skipped, the delivery gate and this
+// convergence oracle would disagree, and /merge's head-check would refuse on
+// an empty head forever.
+func TestReconcileLedger_MarkdownHeadingPrefixedMarkersReconcile(t *testing.T) {
+	body := gateLedgerBodyHeadingPrefixed("request-changes", gateHeadSHA, 1, "full", []string{
+		gateFinding("off-by-one", "correctness", "issue:3", "src/x.go:42", "new", "wrong output"),
+		gateFinding("null-guard", "security", "rule:7", "src/y.go:10", "new", "panic on nil"),
+		gateFinding("style-nit", "style", "rule:2", "src/x.go:1", "new", "naming"),
+	}, nil)
+	dir := reconcileFixture(t, "["+gateReviewJSON(gateBotActor, "CHANGES_REQUESTED", gateHeadSHA, body)+"]", "[]")
+	m, out, _, err := runReconcile(t, dir)
+	if err != nil {
+		t.Fatalf("reconcile failed: %v\nstdout: %s", err, out)
+	}
+	if reconBool(m, "converged") {
+		t.Errorf("open blocking findings must not converge\nstdout: %s", out)
+	}
+	if got := reconLen(m, "open_blocking"); got != 2 {
+		t.Errorf("open_blocking = %d, want 2 (correctness + security — findings must be COUNTED through the prefixed markers)", got)
+	}
+	if got := reconLen(m, "open_advisory"); got != 1 {
+		t.Errorf("open_advisory = %d, want 1 (style)", got)
+	}
+	if got := reconStr(m, "last_verdict"); got != "request-changes" {
+		t.Errorf("last_verdict = %q, want request-changes", got)
+	}
+	if got := reconStr(m, "head"); got != gateHeadSHA {
+		t.Errorf("head = %q, want the verdict's pinned head", got)
+	}
+	if got, ok := m["round"].(float64); !ok || got != 1 {
+		t.Errorf("round = %v, want 1", m["round"])
+	}
+}
+
 // TestReconcileLedger_MalformedLedgerBlockErrors: a bot body carrying a
 // REVIEW-LEDGER v1 block that does not parse is a HARD stop — JSON {"error":
 // ...} on stdout with a non-zero exit, never a silent shrink of the ledger.
@@ -626,6 +673,11 @@ func TestReconcileLedger_MalformedLedgerBlockErrors(t *testing.T) {
 		body string
 	}{
 		{"missing END marker", "REVIEW-LEDGER v1\nround: 1\nhead: " + gateHeadSHA + "\nlane: full\nverdict: approve\n"},
+		// Issue #80: the heading-prefixed opening marker is RECOGNIZED, not
+		// ignored — a prefixed block without its END is still a hard error,
+		// never a silently ledger-less body (pre-fix this returned None and
+		// the verdict vanished from the ledger without a peep).
+		{"prefixed marker missing END", "## REVIEW-LEDGER v1\nround: 1\nhead: " + gateHeadSHA + "\nlane: full\nverdict: approve\n"},
 		{"unknown ledger key inside the block", strings.Replace(
 			gateLedgerBody("approve", gateHeadSHA, 1, "full", nil, nil),
 			"\ncoverage:", "\nextra-knob: 1\ncoverage:", 1)},

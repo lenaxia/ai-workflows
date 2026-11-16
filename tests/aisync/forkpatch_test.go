@@ -281,7 +281,12 @@ func TestRealReviewTemplateCarriesManagedContractRegion(t *testing.T) {
 		t.Fatal("real pr-review.md template has a contract START marker but no END marker")
 	}
 	block := s[startIdx : startIdx+endIdx]
-	for _, want := range []string{"REVIEW-LEDGER v1", "correctness", "test-integrity", "issue:", "rule:", "claim:"} {
+	// "not even `##`" pins the issue #80 negative example: the marker lines are
+	// plain text, never markdown headings. glm-5.3-flash emitted
+	// '## REVIEW-LEDGER v1' on 8/8 verdicts (LLMSafeSpaces PR #2077) — the
+	// format pin must teach the bare line explicitly, or the heading emission
+	// recurs content/length-dependently no matter how tolerant the validator.
+	for _, want := range []string{"REVIEW-LEDGER v1", "correctness", "test-integrity", "issue:", "rule:", "claim:", "not even `##`"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("real contract region is missing %q — the fork patch would inject an incomplete contract", want)
 		}
