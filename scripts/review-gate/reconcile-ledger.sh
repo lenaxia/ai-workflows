@@ -153,6 +153,14 @@ HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 POINTER_RE = re.compile(r"^.+:[0-9]+$")
 ANCHOR_RE = re.compile(r'^(issue:\d+|rule:\d+|claim:"[^"]*")$')
+# Issue #80 (LLMSafeSpaces PR #2077): the reviewer model may emit the two
+# structural marker lines with a markdown-heading prefix ('## REVIEW-LEDGER
+# v1') — 8/8 verdicts on that PR. The prefix is cosmetic (the block body
+# disambiguates), so both markers match with an optional `#{1,6} ` prefix,
+# mirroring check-verdict.sh's tolerance exactly: the delivery gate and this
+# convergence oracle must never disagree on what counts as a block.
+MARKER_START_RE = re.compile(r"(?:#{1,6}\s+)?REVIEW-LEDGER v1")
+MARKER_END_RE = re.compile(r"(?:#{1,6}\s+)?END-REVIEW-LEDGER")
 MARKER_RE = re.compile(
     r"<!-- ai-workflows-verdict: (?:APPROVE|REQUEST_CHANGES) sha=[0-9a-f]{40} -->")
 WAIVER_LINE_RE = re.compile(r"^waive ([A-Za-z0-9][A-Za-z0-9._-]*): (.+)$")
@@ -243,13 +251,13 @@ def parse_kv(val, kind):
 def parse_block(body):
     """Parse THE one REVIEW-LEDGER v1 block; None when the body has none."""
     lines = body.splitlines()
-    starts = [i for i, ln in enumerate(lines) if ln.strip() == "REVIEW-LEDGER v1"]
+    starts = [i for i, ln in enumerate(lines) if MARKER_START_RE.fullmatch(ln.strip())]
     if not starts:
         return None
     if len(starts) > 1:
         raise LedgerError("body carries more than one REVIEW-LEDGER v1 block")
     s = starts[0]
-    ends = [i for i, ln in enumerate(lines) if ln.strip() == "END-REVIEW-LEDGER" and i > s]
+    ends = [i for i, ln in enumerate(lines) if MARKER_END_RE.fullmatch(ln.strip()) and i > s]
     if not ends:
         raise LedgerError("REVIEW-LEDGER v1 block missing END-REVIEW-LEDGER")
     scalars, coverage, findings, waives = {}, [], [], []

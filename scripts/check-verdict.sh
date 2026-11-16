@@ -220,8 +220,14 @@ gate_validate() {
   printf '%s' "${body}" > "${tmp}"
 
   # --- a1: exactly one ledger block -------------------------------------------
+  # Issue #80 (LLMSafeSpaces PR #2077): the reviewer model emitted the marker
+  # as a markdown heading ('## REVIEW-LEDGER v1') on 8/8 verdicts; the strict
+  # bare-line anchor rejected every one (missing-ledger-block). The heading
+  # prefix is cosmetic — the block body disambiguates — so both anchors below
+  # accept an optional `#{1,6} ` markdown-heading prefix. Bare and prefixed
+  # markers in ONE body still count as two blocks (duplicate) — correct.
   local nblocks
-  nblocks="$(grep -c '^REVIEW-LEDGER v1[[:space:]]*$' "${tmp}" || true)"
+  nblocks="$(grep -Ec '^(#{1,6}[[:space:]]+)?REVIEW-LEDGER v1[[:space:]]*$' "${tmp}" || true)"
   if [ "${nblocks}" -eq 0 ]; then
     reason="missing-ledger-block"
   elif [ "${nblocks}" -gt 1 ]; then
@@ -230,11 +236,18 @@ gate_validate() {
 
   # --- a2: parse the block ------------------------------------------------------
   if [ -z "${reason}" ]; then
-    sed -n '/^REVIEW-LEDGER v1[[:space:]]*$/,/^END-REVIEW-LEDGER[[:space:]]*$/p' "${tmp}" > "${blockfile}"
+    sed -nE '/^(#{1,6}[[:space:]]+)?REVIEW-LEDGER v1[[:space:]]*$/,/^(#{1,6}[[:space:]]+)?END-REVIEW-LEDGER[[:space:]]*$/p' "${tmp}" > "${blockfile}"
     local line val part fid fclass fptr fanchor fstatus fpath fline wid
     local -a parts
+    # Heading-prefixed marker lines ('## END-REVIEW-LEDGER') normalize to the
+    # bare form so the skip pattern below (and every consumer of the parsed
+    # block) sees the contract spelling.
+    local md_marker_re='^(#{1,6}[[:space:]]+)(REVIEW-LEDGER v1|END-REVIEW-LEDGER)$'
     while IFS= read -r line; do
       line="$(gate_trim "${line}")"
+      if [[ "${line}" =~ ${md_marker_re} ]]; then
+        line="${BASH_REMATCH[2]}"
+      fi
       case "${line}" in
         "REVIEW-LEDGER v1"|"END-REVIEW-LEDGER"|"") continue ;;
         round:*)

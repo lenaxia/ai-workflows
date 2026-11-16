@@ -50,6 +50,17 @@ END-REVIEW-LEDGER
 - `anchor` ∈ `issue:<n>` (criterion n from the linked issue) | `rule:<n>`
   (numbered rule in the consumer's README-LLM.md) | `claim:"<verbatim PR-body substring>"`
 - One `finding:` per line. `risk`/`fix_cost` are single-line prose.
+- Both structural marker lines (`REVIEW-LEDGER v1`, `END-REVIEW-LEDGER`) are
+  matched with an optional markdown-heading prefix (`#{1,6}` followed by
+  whitespace, e.g. `## REVIEW-LEDGER v1`) — identical tolerance in
+  check-verdict.sh and reconcile-ledger.sh. The prefix is a tolerated model
+  emission cosmetic (issue #80: 8/8 verdicts rejected `missing-ledger-block`
+  on LLMSafeSpaces PR #2077 before this, the reviewer having heading-ified the
+  markers); the block body's grammar disambiguates, so the prefix carries no
+  semantics. A body containing BOTH a bare and a prefixed opening marker
+  counts as two blocks (`duplicate-ledger-block`). The bare line remains the
+  taught contract — the reviewer prompt pins it with an explicit negative
+  example — and this tolerance is a validator fallback, never an invitation.
 - `waive:` lines close advisory findings; the author's waiver comments are the
   authoritative record (see Waivers).
 - Advisory findings carried open across rounds keep their ids (stable id =

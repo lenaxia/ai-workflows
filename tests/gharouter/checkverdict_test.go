@@ -593,6 +593,54 @@ func TestCheckVerdict_RejectsDuplicateLedgerBlock(t *testing.T) {
 	}
 }
 
+// PIN (issue #80, LLMSafeSpaces PR #2077): the reviewer model (glm-5.3-flash)
+// sometimes emits BOTH structural marker lines as markdown headings
+// ('## REVIEW-LEDGER v1' / '## END-REVIEW-LEDGER') — deterministic on that PR
+// (8/8 verdicts rejected missing-ledger-block, PR merged with a permanently
+// red review check), content/length-dependent everywhere else. The heading
+// prefix is purely cosmetic (the block body disambiguates), so the validator
+// accepts an optional `#{1,6} ` heading prefix on either marker line — in
+// BOTH parsers (reconcile-ledger.sh owns the twin pin). Bare-marker and
+// missing-block semantics are unchanged (pinned above and by
+// TestCheckVerdict_RejectsVerdictWithoutLedgerBlock).
+func TestCheckVerdict_MarkdownHeadingPrefixedLedgerDelivers(t *testing.T) {
+	// prefixedLedgerBlock is ledgerBlockV1 with both marker lines heading-
+	// prefixed — the exact emission shape from PR #2077.
+	prefixedLedgerBlock := func() string {
+		return strings.Replace(
+			strings.Replace(ledgerBlockV1("full", "approve"), "REVIEW-LEDGER v1", "## REVIEW-LEDGER v1", 1),
+			"END-REVIEW-LEDGER", "## END-REVIEW-LEDGER", 1)
+	}
+	t.Run("marker comment with prefixed markers delivers", func(t *testing.T) {
+		body := markerCommentBody("APPROVE", headSHA) + "\n" + prefixedLedgerBlock()
+		m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
+		out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+		if outs["delivered"] != "comment" {
+			t.Errorf("'## REVIEW-LEDGER v1' heading markers must deliver (heading prefix is cosmetic — issue #80), got %q reason=%q\noutput:\n%s",
+				outs["delivered"], outs["rejection_reason"], out)
+		}
+	})
+	t.Run("official review with prefixed markers delivers", func(t *testing.T) {
+		body := "**Commit reviewed:** `" + headSHA + "`\n\n" + prefixedLedgerBlock()
+		reviews := "[" + reviewWithBody("APPROVED", headSHA, body) + "]"
+		m := newCheckMockGH(t, []string{"[]"}, reviews)
+		out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+		if outs["delivered"] != "review" {
+			t.Errorf("prefixed markers must deliver via the review channel too, got %q reason=%q\noutput:\n%s",
+				outs["delivered"], outs["rejection_reason"], out)
+		}
+	})
+	t.Run("bare and prefixed markers together stay duplicate", func(t *testing.T) {
+		body := markerCommentBody("APPROVE", headSHA) + "\n" + ledgerBlockV1("full", "approve") + "\n" + prefixedLedgerBlock()
+		m := newCheckMockGH(t, []string{"[" + rawComment("github-actions[bot]", body) + "]"}, "[]")
+		out, outs := runCheckVerdictEnv(t, m, gateTestEnv...)
+		if outs["delivered"] != "false" || !strings.HasPrefix(outs["rejection_reason"], "duplicate-ledger-block:") {
+			t.Errorf("bare + prefixed opening markers are TWO ledger blocks (duplicate-ledger-block:<n>), got delivered=%q reason=%q\noutput:\n%s",
+				outs["delivered"], outs["rejection_reason"], out)
+		}
+	})
+}
+
 // PIN: the ledger `head:` must match the PR head at prompt-build time — a
 // verdict pinned to another commit is stale even when freshly posted.
 func TestCheckVerdict_RejectsHeadMismatch(t *testing.T) {
